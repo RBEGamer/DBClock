@@ -1,8 +1,8 @@
 # DBClock
-A polished DB trainstation clock with NTP sync
+A polished DB trainstation clock with NTP sync.
 
 
-## The Clock
+## Bahnhofsuhr-DB
 
 [bahnhofsuhr-db-shop](https://bahnshop.de/db-originale/sonstiges/1749/bahnhofsuhr-db)
 
@@ -19,4 +19,6 @@ In my clock, `BU 190t S230` the clock-drives were used.
 
 ## BU 190t S230
 
+A complete manual for the drive can be found on the manufacturers website:
+[Uhrwerk-BU-190-230-Installation.pdf](https://www.buerk-mobatime.de/wp-content/uploads/2020/01/BD-800603.01-Uhrwerk-BU-190-230-Installation.pdf)
 
