@@ -1,6 +1,7 @@
 # DBClock
 
-![alt text](documentation/images/2023-02-14 13.25.36.jpg "Title")
+![2023-02-14 13 25 36](https://user-images.githubusercontent.com/9280991/218873674-c37656a7-354a-447a-a6b4-41e935bf3d74.jpg)
+
 
 ## Features
 
