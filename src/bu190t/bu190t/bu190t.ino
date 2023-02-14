@@ -4,9 +4,10 @@
 #define RTC_TIMEZONE 0 //0=UTC ,1=MEZ
 #define VERSION "1.0.0"
 #define WIFIEXTENTION_SERIAL Serial3 // TO ESP8266
+#define CLOCK_SERIAL Serial2
 #define DEBUG_SERIAL Serial //USB
 #define LIGHTMODE_AUTO_HOUR_START 20
-#define LIGHTMODE_AUTO_HOUR_END 23
+#define LIGHTMODE_AUTO_HOUR_END 22
 #define LIGHTMODE_AUTO_HOUR_MAX_PWM 150
 
 #include <TimeLib.h>
@@ -35,8 +36,12 @@ unsigned long previousMillis = 0;
 uint8_t current_led_pwm = 0; // to fade from 0-255
 uint8_t target_led_pwm = 0;
 bool last_brght_button_state = false;
-String readString;
 
+
+String readString;
+bool cmd_started = false;
+#define CMD_START_CHARACTER '%'
+#define CMD_SEPERATION_CHARACTER '_'
 //EEPROM MANAGED VARIABLES
 uint8_t led_mode = 0;
 uint8_t daylightsaving_enabled = 0;
@@ -44,10 +49,9 @@ uint8_t daylightsaving_enabled = 0;
 
 void setup() {
   // put your setup code here, to run once:
-  Serial.begin(9600);
+  DEBUG_SERIAL.begin(9600);
   //IMPORTANT FOR THE BU 190t WATCH DRIVES
-  Serial1.begin(9600,SERIAL_7E1); // FIRST CLOCK DRIVE
-  Serial2.begin(9600,SERIAL_7E1); // SECOND CLOCK DRIVE
+  CLOCK_SERIAL.begin(9600,SERIAL_7E1); // FIRST CLOCK DRIVE
   //FOR WIFI INTERFACE
   WIFIEXTENTION_SERIAL.begin(9600);
   // INIT PINS
@@ -205,8 +209,8 @@ void send_time_to_clock(const int _h, const int _m, const int _s, bool _signal_o
     signok = "A";
   }
   // USE WITH Serial.begin(9600,SERIAL_7E1);
-  Serial2.print("O" + signok + "L230212F"+ h + m + s +"\r");
-  Serial3.print("O" + signok + "L230212F"+ h + m + s +"\r");
+  CLOCK_SERIAL.print("O" + signok + "L230212F"+ h + m + s +"\r");
+  //Serial3.print("O" + signok + "L230212F"+ h + m + s +"\r");
   send_status("ct", h + ":" + m + ":" + s);
 }
 
@@ -285,9 +289,10 @@ void loop() {
 
       //ALSO HANDLE LED MODE AUTO
       if(led_mode == 6){
-        // FADE 0-max with max-0
+        // FADE 0-max and max-0
+        //light up 3times as fast as for light down
         if(h == LIGHTMODE_AUTO_HOUR_START){
-          target_led_pwm = map(minute(),0,60,0, LIGHTMODE_AUTO_HOUR_MAX_PWM);
+          target_led_pwm = map(max(minute()*3, 60),0,60,0, LIGHTMODE_AUTO_HOUR_MAX_PWM);
         }else if(h == LIGHTMODE_AUTO_HOUR_END){
           target_led_pwm = map(60-minute(),0,60,0, LIGHTMODE_AUTO_HOUR_MAX_PWM);
         }
@@ -322,18 +327,81 @@ void loop() {
     while (WIFIEXTENTION_SERIAL.available()) {
       delay(30); //delay to allow buffer to fill
       if (WIFIEXTENTION_SERIAL.available() > 0) {
-        const char c = WIFIEXTENTION_SERIAL.read(); //gets one byte from serial buffer
-        readString += c; //makes the string readString
+        const char c = WIFIEXTENTION_SERIAL.read(); //gets one byte from serial buffer  
+        
         if (c == '\n') {
           WIFIEXTENTION_SERIAL.flush();
+          cmd_started = false;
+          readString += CMD_SEPERATION_CHARACTER;
           break;
+        }else if(c == CMD_START_CHARACTER && !cmd_started){
+          cmd_started = true;
+          readString = "";
+        }else if(cmd_started){
+          readString += c; //makes the string readString
         }
+          
       }
     }
 
     if (readString.length() > 0) {
+      
+      const String cmd = getValue(readString, CMD_SEPERATION_CHARACTER, 0);
+      String cmd_value = getValue(readString, CMD_SEPERATION_CHARACTER, 1);
+      //st
+      //sd
+      if(cmd == "sb" && cmd_value != ""){
+        const int tmp = cmd_value.toInt();
+        if(tmp >= 0 && tmp < 7){
+            led_mode = tmp;
+            EEPROM.write(EEPROM_INDEX_LED_MODE,led_mode);
+            update_according_led_mode(led_mode);
+            DEBUG_SERIAL.println(led_mode);
+        }
+      }else if(cmd == "dls" && cmd_value != ""){
+        const int dlsi = cmd_value.toInt();
+        if(dlsi >= 0 && dlsi < 2){
+          daylightsaving_enabled = dlsi;
+          EEPROM.write(EEPROM_INDEX_DLS, daylightsaving_enabled);
+        }
+      }else if(cmd == "st" && cmd_value != ""){ //SET TIME
+        const String sth = getValue(cmd_value, ':', 0);
+        const String stm = getValue(cmd_value, ':', 1);
+        const String sts =  getValue(getValue(cmd_value, ':', 2), '_', 0);;
+        
+        if(sth != "" && stm != ""){
+          const int ih = sth.toInt();
+          const int im = stm.toInt();
+          const int is = sts.toInt();
+          
+          if(ih >0 && ih < 24 && im >0 && im < 60 && is >0 && is < 60){
+            tmElements_t tm;
+            RTC.read(tm);
+            setTime(ih, im, is, tm.Day, tm.Month, tm.Year);
+          }
+        }
+        DEBUG_SERIAL.println(sth + "::" + stm + "::" + sts);
+      }else if(cmd == "sd" && cmd_value != ""){ //SET DATE
+        const String sdday = getValue(cmd_value, '.', 0);
+        const String sdmonth = getValue(cmd_value, '.', 1);
+        const String sdyear = getValue(getValue(cmd_value, '.', 2), '_', 0);
+        
+        if(sdday != "" && sdmonth != "" && sdyear != ""){
+          const int iday = sdday.toInt();
+          const int imonth = sdmonth.toInt();
+          const int iyear = sdyear.toInt();
+          
+          if(iday > 0 && iday < 31 && imonth >0 && imonth < 12){
+            tmElements_t tm;
+            RTC.read(tm);
+            setTime(tm.Hour, tm.Minute, tm.Second, iday, imonth, tm.Year);
+          }
+        }
+        DEBUG_SERIAL.println(sdday + ".." + sdmonth + ".." + sdyear);
+      }
+
+      send_status("gotcmd", cmd + "-"+cmd_value+"-");
       readString = "";
-      send_status("gotcmd", readString);
     } 
 
   delay(10);

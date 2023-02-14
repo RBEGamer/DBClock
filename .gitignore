@@ -32,3 +32,10 @@
 *.app
 src/.DS_Store
 src/.DS_Store
+src/wifiinterface/wifiinterface/.DS_Store
+src/wifiinterface/wifiinterface/build/.DS_Store
+src/bu190t/.DS_Store
+src/bu190t/3rd_party_libs/.DS_Store
+src/bu190t/.DS_Store
+src/bu190t/3rd_party_libs/.DS_Store
+.DS_Store
