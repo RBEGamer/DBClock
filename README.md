@@ -8,6 +8,7 @@
 * NTP Sync
 * LED lightning, dimmable
 * Stand
+* 12V 
 
 ## Bahnhofsuhr-DB
 
@@ -109,5 +110,23 @@ In my case i used a Arduino Mega, with more than one hardware serial interface.
 The desing is using `Serial2` for the clock drive and `Serial` to communicate with the PC or ESP8266 for NTP Sync.
 By using a RTC like the `DS3231` in combination with the `ESP8266` for NTP sync, you get a very stable self syncing clock!
 The the `src` directory for the Arduino and `ESP866` sources.
+
+
+
+## LED
+
+![led](https://user-images.githubusercontent.com/9280991/218877529-a87ac514-6470-402f-b00f-8c9af99b9be0.jpg)
+
+The old lamp was replaced with a neutral-white 12B led strip with 144 LEDs/m.
+Using a mosfet connected to the Arduino PWM GPIO `Pin 8`, it is possible to control the strip using software.
+The current implementation, allows fade up/down on predefined times.
+
+## Stand
+
+![stand](https://user-images.githubusercontent.com/9280991/218878291-089b0718-5398-4150-b824-e7dbf4db6409.png)
+
+A clock stand/holder was not included, so a simple millable (or 3d printable ABS 100% infill) was designed.
+The bottom holes are designed to be mounted on 30x30 n-nut profiles.
+The files can be found in the `src/3d_print/clock_mount` directory.
 
 
