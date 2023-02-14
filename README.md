@@ -32,13 +32,15 @@ A complete manual for the drive can be found on the manufacturers website:
 
 ### POWER THE DRIVE
 
+![2023-02-12 22 21 10](https://user-images.githubusercontent.com/9280991/218875750-ed3e288c-a10a-4c93-b43a-8ce384c02066.jpg)
+
 I got the `BU 190t S230` version which needs 230v.
 After a teardown, a small rectifier is found so that the drive uses a lower voltage for the motors and logic.
 After further investigation on the transformers, the drive is internally operated with 12 V. 
 So if you solder some wires directly to the rectifier and run it with a 12 V power supply, the drive works fine.
 It also uses its own crystal, so no need for a stable 60Hz sync from the mains.
 
-![2023-02-12 22 21 10](https://user-images.githubusercontent.com/9280991/218875750-ed3e288c-a10a-4c93-b43a-8ce384c02066.jpg)
+
 
 
 ### SET THE TIME USING AN ARDUINO
@@ -51,7 +53,7 @@ The connector is a `RJ12` jack it is connected to the Arduino using the followin
 | TX      | TTL IN (RxD) | 1        |
 | GND     | GND          | 2        |
 
-![2023-02-12 22 21 10](https://user-images.githubusercontent.com/9280991/218875750-ed3e288c-a10a-4c93-b43a-8ce384c02066.jpg)
+
 
 
 The following Arduino code function sends the current time to the drive.
