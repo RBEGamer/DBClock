@@ -3,7 +3,11 @@
 #define EEPROM_INDEX_DLS 1
 #define RTC_TIMEZONE 0 //0=UTC ,1=MEZ
 #define VERSION "1.0.0"
+#define WIFIEXTENTION_SERIAL Serial3
 
+#define LIGHTMODE_AUTO_HOUR_START 20
+#define LIGHTMODE_AUTO_HOUR_END 23
+#define LIGHTMODE_AUTO_HOUR_MAX_PWM 150
 
 #include <TimeLib.h>
 #include <EEPROM.h>
@@ -16,6 +20,7 @@ void send_time_to_clock(const int _h, const int _m, const int _s, bool _signal_o
 uint16_t crc16(const String _data, const uint16_t _poly = 0x8408);
 bool check_for_i2c_device(const uint8_t _addr);
 bool summertime_eu(const int _year, const signed char _month, const signed char _day, const signed char _hour);
+String getValue(const String data, const char separator, const int index);
 
 int clock_hour = 0;
 int clock_min = 0;
@@ -30,6 +35,7 @@ unsigned long previousMillis = 0;
 uint8_t current_led_pwm = 0; // to fade from 0-255
 uint8_t target_led_pwm = 0;
 bool last_brght_button_state = false;
+String readString;
 
 //EEPROM MANAGED VARIABLES
 uint8_t led_mode = 0;
@@ -43,7 +49,7 @@ void setup() {
   Serial1.begin(9600,SERIAL_7E1); // FIRST CLOCK DRIVE
   Serial2.begin(9600,SERIAL_7E1); // SECOND CLOCK DRIVE
   //FOR WIFI INTERFACE
-  Serial3.begin(9600);
+  WIFIEXTENTION_SERIAL.begin(9600);
   // INIT PINS
   pinMode(PIN_BUTTON_BRGHT, INPUT_PULLUP);
   pinMode(PIN_LED_PWM, OUTPUT);
@@ -97,10 +103,26 @@ void setup() {
 }
 
 
+String getValue(const String data, const char separator, const int index) {
+  int found = 0;
+  int strIndex[] = {
+    0,
+    -1
+  };
+  int maxIndex = data.length() - 1;
+  for (int i = 0; i <= maxIndex && found <= index; i++) {
+    if (data.charAt(i) == separator || i == maxIndex) {
+      found++;
+      strIndex[0] = strIndex[1] + 1;
+      strIndex[1] = (i == maxIndex) ? i + 1 : i;
+    }
+  }
+  return found > index ? data.substring(strIndex[0], strIndex[1]) : "";
+}
 
 void send_status(const String _command, const String _payload){
  Serial.println("%" + _command + "_" + _payload + "_" + crc16(_command + _payload));
- Serial3.println("%" + _command + "_" + _payload + "_" + crc16(_command + _payload));
+ WIFIEXTENTION_SERIAL.println("%" + _command + "_" + _payload + "_" + crc16(_command + _payload));
 }
 
 
@@ -172,7 +194,7 @@ void send_time_to_clock(const int _h, const int _m, const int _s, bool _signal_o
     m="0"+m;
   }
 
-  const int hour = _m%24;
+  const int hour = _h%24;
   String h = String(hour);
   if(hour<10){
     h="0"+h;
@@ -190,7 +212,7 @@ void send_time_to_clock(const int _h, const int _m, const int _s, bool _signal_o
 
 
 void update_according_led_mode(const uint8_t _led_mode){
-    const uint8_t led_mode = _led_mode % 6;
+    const uint8_t led_mode = _led_mode % 7;
     if(led_mode == 0){
       target_led_pwm = 0;
     }else if(led_mode == 1){
@@ -220,8 +242,9 @@ void update_according_led_mode(const uint8_t _led_mode){
 void loop() {
 
   
+  
 
- 
+  /// BUTTOM FOR LIGHTMODE TOGGLE
   if(digitalRead(PIN_BUTTON_BRGHT) == LOW && last_brght_button_state == true){
     last_brght_button_state = false;
     led_mode++;
@@ -229,7 +252,7 @@ void loop() {
       led_mode = 0;
     }
     
-    Serial.println("btn");
+    send_status("log", "LedMode" + String(led_mode));
     //SAVE LED MODE
     EEPROM.write(EEPROM_INDEX_LED_MODE,led_mode);
     update_according_led_mode(led_mode);
@@ -256,14 +279,24 @@ void loop() {
         }
         h = h % 24;
       }
+      //SEND TIME TO CLOCK-DRIVES
       send_time_to_clock(h, minute(),second(), true);
-    } else {
-      Serial.println("_log_timenotset_");
-      //TIME NOT SET SO SET TIME
-      setTime(0,0,0,1,1,23);
+
+      //ALSO HANDLE LED MODE AUTO
+      if(led_mode == 6){
+        // FADE 0-max with max-0
+        if(h == LIGHTMODE_AUTO_HOUR_START){
+          target_led_pwm = map(minute(),0,60,0, LIGHTMODE_AUTO_HOUR_MAX_PWM);
+        }else if(h == LIGHTMODE_AUTO_HOUR_END){
+          target_led_pwm = map(60-minute(),0,60,0, LIGHTMODE_AUTO_HOUR_MAX_PWM);
+        }
+        
+      }
     }
 
-    
+    if(target_led_pwm != current_led_pwm){
+      send_status("led", String(target_led_pwm));
+    }
   }
   
   // UPDATE LEDS WITH SOME RAMP UP/DOWN
@@ -284,5 +317,23 @@ void loop() {
     analogWrite(PIN_LED_PWM, current_led_pwm);
   }
 
-  delay(30);
+
+    while (WIFIEXTENTION_SERIAL.available()) {
+      delay(30); //delay to allow buffer to fill
+      if (WIFIEXTENTION_SERIAL.available() > 0) {
+        const char c = WIFIEXTENTION_SERIAL.read(); //gets one byte from serial buffer
+        readString += c; //makes the string readString
+        if (c == '\n') {
+          WIFIEXTENTION_SERIAL.flush();
+          break;
+        }
+      }
+    }
+
+    if (readString.length() > 0) {
+      readString = "";
+      send_status("gotcmd", readString);
+    } 
+
+  delay(10);
 }
