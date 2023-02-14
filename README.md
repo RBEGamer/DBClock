@@ -107,3 +107,7 @@ void send_time_to_clock(const uint8_t _h, const uint8_t _m, const uint8_t _s, bo
 
 In my case i used a Arduino Mega, with more than one hardware serial interface.
 The desing is using `Serial2` for the clock drive and `Serial` to communicate with the PC or ESP8266 for NTP Sync.
+By using a RTC like the `DS3231` in combination with the `ESP8266` for NTP sync, you get a very stable self syncing clock!
+The the `src` directory for the Arduino and `ESP866` sources.
+
+
