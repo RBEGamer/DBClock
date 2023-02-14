@@ -1,7 +1,7 @@
 # DBClock
 
 ![clock_final](./documentation/images/2023-02-14 13.25.36.jpg)
-
+![4_digit_complete_alt](./documentation/images/2023-02-14 13.25.36.jpg)
 ## Features
 
 * 
