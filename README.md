@@ -28,6 +28,11 @@ Shipping is by freight forwarding on one-way pallet (free curbside). Disposal of
 
 In my clock, `BU 190t S230` the clock-drives were used.
 
+
+### MORE LINKS
+
+* [PROFILINE-Analoguhr.pdf]([https://bahnshop.de/db-originale/sonstiges/1749/bahnhofsuhr-db](https://www.mobatime.com/wp-content/uploads/2021/11/LD-800078.24-PROFILINE-Analoguhr.pdf))
+
 ## BU 190t S230
 
 
@@ -138,4 +143,6 @@ The bottom holes are designed to be mounted on 30x30 n-nut profiles.
 The files can be found in the `src/3d_print/clock_mount` directory.
 
 Four `M8x30` with lock nuts were used to attach the clock to the milled stand.
+
+**NOTE** The clock weighs about 30 kg, so the stand should be durable...
 
