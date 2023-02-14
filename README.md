@@ -9,6 +9,9 @@
 * LED lightning, dimmable
 * Stand
 * 12V 
+* Webinterface for configuration
+* Daylight Saving
+
 
 ## Bahnhofsuhr-DB
 
@@ -118,8 +121,13 @@ The the `src` directory for the Arduino and `ESP866` sources.
 ![led](https://user-images.githubusercontent.com/9280991/218877529-a87ac514-6470-402f-b00f-8c9af99b9be0.jpg)
 
 The old lamp was replaced with a neutral-white 12B led strip with 144 LEDs/m.
-Using a mosfet connected to the Arduino PWM GPIO `Pin 8`, it is possible to control the strip using software.
-The current implementation, allows fade up/down on predefined times.
+Using a mosfet connected to the Arduino PWM GPIO `Pin 8`, so it is possible to control the strip using software.
+The current implementation, allows fade up/down on predefined times, on/off from 0-100%.
+
+### BUTTON
+
+A pushbutton from `GND` to Arduino GPIO `2` can be connected to set the LED intensity modes manually.
+
 
 ## Stand
 
@@ -129,4 +137,5 @@ A clock stand/holder was not included, so a simple millable (or 3d printable ABS
 The bottom holes are designed to be mounted on 30x30 n-nut profiles.
 The files can be found in the `src/3d_print/clock_mount` directory.
 
+Four `M8x30` with lock nuts were used to attach the clock to the milled stand.
 
