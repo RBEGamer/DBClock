@@ -66,7 +66,6 @@ void send_time_to_clock(const uint8_t _h, const uint8_t _m, const uint8_t _s, bo
 void setup(){
   // NOTE THE SPEICAL SERIAL INIT ACCORDING THE DRIVES DATASHEET
   Serial.begin(9600,SERIAL_7E1);
-  
 }
 
 
@@ -105,3 +104,6 @@ void send_time_to_clock(const uint8_t _h, const uint8_t _m, const uint8_t _s, bo
   Serial.print("O" + signok + "L010100F"+ h + m + s +"\r");
 }
 ```
+
+In my case i used a Arduino Mega, with more than one hardware serial interface.
+The desing is using `Serial2` for the clock drive and `Serial` to communicate with the PC or ESP8266 for NTP Sync.
