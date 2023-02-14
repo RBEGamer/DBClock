@@ -119,6 +119,7 @@ The desing is using `Serial2` for the clock drive and `Serial` to communicate wi
 By using a RTC like the `DS3231` in combination with the `ESP8266` for NTP sync, you get a very stable self syncing clock!
 The the `src` directory for the Arduino and `ESP866` sources.
 
+ ![Arduino](https://user-images.githubusercontent.com/9280991/218880766-d55ab539-9287-48b1-9fd1-46a60e43f065.jpg)
 
 
 ## LED
