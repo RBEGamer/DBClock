@@ -4,7 +4,9 @@
 
 ## Features
 
-* 
+* NTP Sync
+* LED lightning, dimmable
+* Stand
 
 ## Bahnhofsuhr-DB
 
