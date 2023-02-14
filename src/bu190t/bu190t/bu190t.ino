@@ -3,8 +3,8 @@
 #define EEPROM_INDEX_DLS 1
 #define RTC_TIMEZONE 0 //0=UTC ,1=MEZ
 #define VERSION "1.0.0"
-#define WIFIEXTENTION_SERIAL Serial3
-
+#define WIFIEXTENTION_SERIAL Serial3 // TO ESP8266
+#define DEBUG_SERIAL Serial //USB
 #define LIGHTMODE_AUTO_HOUR_START 20
 #define LIGHTMODE_AUTO_HOUR_END 23
 #define LIGHTMODE_AUTO_HOUR_MAX_PWM 150
@@ -121,7 +121,7 @@ String getValue(const String data, const char separator, const int index) {
 }
 
 void send_status(const String _command, const String _payload){
- Serial.println("%" + _command + "_" + _payload + "_" + crc16(_command + _payload));
+ DEBUG_SERIAL.println("%" + _command + "_" + _payload + "_" + crc16(_command + _payload));
  WIFIEXTENTION_SERIAL.println("%" + _command + "_" + _payload + "_" + crc16(_command + _payload));
 }
 
