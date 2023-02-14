@@ -1,4 +1,7 @@
 # DBClock
+
+![clock_final](./documentation/images/2023-02-14 13.25.36.jpg)
+
 A polished DB trainstation clock with NTP sync.
 
 
