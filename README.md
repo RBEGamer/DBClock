@@ -128,9 +128,15 @@ The the `src` directory for the Arduino and `ESP866` sources.
 
 ![led](https://user-images.githubusercontent.com/9280991/218877529-a87ac514-6470-402f-b00f-8c9af99b9be0.jpg)
 
+
+* [IRF520 MOSFET Treiber Modul](https://de.aliexpress.com/item/32667789271.html)
+* [LED-Streifen 5m weiß](https://www.ledpoint.it/de/led-streifen-5m-warm-weiß-3500k-3step-2835-120ledm-12v-144wm)
+
+
 The old lamp was replaced with a neutral-white 12B led strip with 144 LEDs/m.
 Using a mosfet connected to the Arduino PWM GPIO `Pin 8`, so it is possible to control the strip using software.
 The current implementation, allows fade up/down on predefined times, on/off from 0-100%.
+
 
 ### BUTTON
 
