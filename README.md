@@ -147,6 +147,7 @@ A pushbutton from `GND` to Arduino GPIO `2` can be connected to set the LED inte
 
 | Arduino | BU 190t RJ12 pin      | DS3131   | PUSHBUTTON PIN |   MOSFET PIN |   ESP8266    |
 |---------|-----------------------|----------|----------------|--------------|--------------|
+| VIN     | + pin on fullbridge   |          |                |              |              |
 | TX      | TTL IN (RxD)  1       |          |                |              |              |
 | GND     | GND           2       | GND      |  1             |    GND       |   GND        |
 | 2       |                       |          |  2             |              |              |
