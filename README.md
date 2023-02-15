@@ -171,3 +171,14 @@ Four `M8x30` with lock nuts were used to attach the clock to the milled stand.
 
 **NOTE** The clock weighs about 30 kg, so the stand should be durable...
 
+
+## PICTURES
+
+![2023-02-14 22 11 03](https://user-images.githubusercontent.com/9280991/219017128-bdec6231-8f9d-43a7-a9d2-3d14baaa5de2.png)
+
+
+### CLOCK FINGERS
+![2023-02-12 22 24 04](https://user-images.githubusercontent.com/9280991/219017098-3d16878f-0d2f-4925-8360-469b16b6c4e4.jpg)
+
+
+
