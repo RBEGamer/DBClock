@@ -122,6 +122,8 @@ The the `src` directory for the Arduino and `ESP866` sources.
  ![Arduino](https://user-images.githubusercontent.com/9280991/218880766-d55ab539-9287-48b1-9fd1-46a60e43f065.jpg)
 
 
+
+
 ## LED
 
 ![led](https://user-images.githubusercontent.com/9280991/218877529-a87ac514-6470-402f-b00f-8c9af99b9be0.jpg)
@@ -133,6 +135,21 @@ The current implementation, allows fade up/down on predefined times, on/off from
 ### BUTTON
 
 A pushbutton from `GND` to Arduino GPIO `2` can be connected to set the LED intensity modes manually.
+
+
+## FINAL PINOUT
+
+| Arduino | BU 190t RJ12 pin      | DS3131   | PUSHBUTTON PIN |   MOSFET PIN |   ESP8266    |
+|---------|-----------------------|----------|----------------|--------------|--------------|
+| TX      | TTL IN (RxD)  1       |          |                |              |              |
+| GND     | GND           2       | GND      |  1             |    GND       |   GND        |
+| 2       |                       |          |  2             |              |              |
+| 8       |                       |          |                |    SIG       |              |
+| 5V      |                       | VCC      |                |    VCC       |   VIN        |
+| RX      |                       |          |                |              |   TX         |
+| SDA     |                       | SDA      |                |              |              |
+| SCL     |                       | SCL      |                |              |              |
+
 
 
 ## Stand
