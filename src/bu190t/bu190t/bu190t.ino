@@ -230,7 +230,8 @@ void update_according_led_mode(const uint8_t _led_mode){
     }else if(led_mode == 5){
       target_led_pwm = 255;  
      }else if(led_mode == 6){
-       target_led_pwm = 1;  //INDICATE CLOCK IS IN AUTO
+       target_led_pwm = 0;
+       current_led_pwm = 50;//INDICATE CLOCK IS IN AUTO
       //AUTO
     }
 }
