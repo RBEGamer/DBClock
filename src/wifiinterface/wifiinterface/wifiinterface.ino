@@ -1,4 +1,4 @@
-#define VERSION "3.2.0"
+#define VERSION "3.2.1"
 // ENABLE ON ESP8266-01 !!!!!!!!!!!!!!!!!!!!!!!!!!
 #define USE_LITTLEFS
 //FOR ESP8266-01
@@ -41,7 +41,7 @@
 #define MDNS_NAME "dbclock"                                 // set hostname
 #define WEBSITE_TITLE "DB Wifi Module Configuration"  // name your device
 #define SERIAL_BAUD_RATE 9600
-#define NTP_SEND_TIME_INTERVAL 5 * 60  //sende zeit an uhr all x minuten
+#define NTP_SEND_TIME_INTERVAL 12*60 * 60  //sende zeit an uhr all x minuten
 #define DEFAULT_NTP_SERVER "pool.ntp.org"
 #define DEFAULT_TIMEZONE 1
 // END CONFIG ---------------------------------
@@ -57,7 +57,7 @@ const String BOARD_INFO = "DBCLOCKWIFIMODULE_FW_" + String(VERSION) + "_BOARD_" 
 #elif defined(ESP32)
 const String BOARD_INFO = "DBCLOCKWIFIMODULE_FW_" + String(VERSION) + "_BOARD_" + "ESP32";
 #endif
-
+bool ntp_force_update = true;
 
 const String ap_name = "DBClockConfiguration";
 
@@ -300,6 +300,7 @@ uint32_t get_esp_chip_id() {
 
 
 void handleSave() {
+  ntp_force_update = true;
   // PARSE ALL GET ARGUMENTS
   for (uint8_t i = 0; i < server.args(); i++) {
     // timezone +-12hours
@@ -500,8 +501,13 @@ void loop(void) {
   //HANDLE SERVER
   server.handleClient();
   //UPDATE NTP NTP
-  if ((millis() - last) > (1000 * NTP_SEND_TIME_INTERVAL)) {
-    last = millis();
+  if ((millis() - last) > (1000 * NTP_SEND_TIME_INTERVAL) || ntp_force_update) {
+    if(ntp_force_update){
+      ntp_force_update = false;
+    }else{
+      last = millis();
+    }
+    
     led_state = !led_state;
     digitalWrite(LED_BUILTIN, led_state);
     //HANDLE NTP
