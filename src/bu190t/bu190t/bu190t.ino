@@ -2,18 +2,18 @@
 #define EEPROM_INDEX_LED_MODE 0
 #define EEPROM_INDEX_DLS 1
 #define RTC_TIMEZONE 0 //0=UTC ,1=MEZ
-#define VERSION "1.0.0"
+#define VERSION "2.0.0"
 #define WIFIEXTENTION_SERIAL Serial3 // TO ESP8266
 #define CLOCK_SERIAL Serial2
 #define DEBUG_SERIAL Serial //USB
 #define LIGHTMODE_AUTO_HOUR_START 20
-#define LIGHTMODE_AUTO_HOUR_END 22
+#define LIGHTMODE_AUTO_HOUR_END 23
 #define LIGHTMODE_AUTO_HOUR_MAX_PWM 150
 
-#include <TimeLib.h>
 #include <EEPROM.h>
 #include <Wire.h>
-#include <DS1307RTC.h>
+#include "RTClib.h"
+
 
 void send_status(const String _command, const String _payload);
 void update_according_led_mode(const uint8_t _led_mode);
@@ -47,6 +47,8 @@ uint8_t led_mode = 0;
 uint8_t daylightsaving_enabled = 0;
 
 
+RTC_DS1307 rtc;
+
 void setup() {
   // put your setup code here, to run once:
   DEBUG_SERIAL.begin(9600);
@@ -71,37 +73,23 @@ void setup() {
   if(check_for_i2c_device(DS1307_CTRL_ID)){
     //CHECK IF RTC IS IN STOP MODE SO ONE INITIAL SET IS NEEDED
     // ITS NOT WORKING IF THE TIMLIB IS USED DIRECTLY
-    if(RTC.chipPresent()){
-      send_status("log", "RtcChipPresent");
-      tmElements_t tm;
-      //SOME DEFAULT TIME
-      tm.Hour = 0;
-      tm.Minute = 0;
-      tm.Second = 0;
-      tm.Day = 1;
-      tm.Month = 1;
-      tm.Wday = 4;
-      tm.Year = CalendarYrToTm(1970);
-      //WRITE TIME TO FLASH
-      if (RTC.write(tm)) {
-        setSyncProvider(RTC.get);   // FINALLY SET TIMESOURCE TO RTC
-        send_status("log", "RtcWriteInitialTime");
+    if(rtc.begin()){
+      if (!rtc.isrunning()) {
+        Serial.println("RTC lost power, let's set the time!");
+        rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+      }else{
+        send_status("log", "RTC RUNNING");
+        rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
       }
+       
     }else{
       send_status("log", "!RtcChipPresent");
-      setSyncProvider(RTC.get);   // DEFAULT RTC
     }
     send_status("log", "RtcFound");
   }else{
     send_status("log", "RtcNotFound");
   }
-  //INIT TimeLIB
-  if(timeStatus()!= timeSet){ 
-     send_status("log", "TimeLibStatusError"); 
-  }else{
-     send_status("log", "TimeLibStatusOk"); 
-  }   
-
+  
   send_status("version", VERSION); 
   
 }
@@ -231,7 +219,7 @@ void update_according_led_mode(const uint8_t _led_mode){
       target_led_pwm = 255;  
      }else if(led_mode == 6){
        target_led_pwm = 0;
-       current_led_pwm = 50;//INDICATE CLOCK IS IN AUTO
+       current_led_pwm = 20;//INDICATE CLOCK IS IN AUTO
       //AUTO
     }
 }
@@ -273,10 +261,10 @@ void loop() {
   const unsigned long currentMillis = millis();
   if (currentMillis - previousMillis >= CLOCK_UPDATE_INTERAL) {
     previousMillis = currentMillis;
-    
-    if (timeStatus() == timeSet) {
-      int h = hour();
-      if (daylightsaving_enabled > 0 && summertime_eu(year(), month(), day(), h))
+    DEBUG_SERIAL.println(".");
+      DateTime now = rtc.now();
+      int h = now.hour();
+      if (daylightsaving_enabled > 0 && !summertime_eu(now.year(), now.month(), now.day(), h))
       {
         signed char h = h - 1;
         if (h < 0)
@@ -286,20 +274,19 @@ void loop() {
         h = h % 24;
       }
       //SEND TIME TO CLOCK-DRIVES
-      send_time_to_clock(h, minute(),second(), true);
+      send_time_to_clock(h, now.minute(),now.second(), true);
 
       //ALSO HANDLE LED MODE AUTO
       if(led_mode == 6){
         // FADE 0-max and max-0
         //light up 3times as fast as for light down
         if(h == LIGHTMODE_AUTO_HOUR_START){
-          target_led_pwm = map(max(minute()*3, 60),0,60,0, LIGHTMODE_AUTO_HOUR_MAX_PWM);
+          target_led_pwm = map(max(now.minute()*3, 60),0,60,0, LIGHTMODE_AUTO_HOUR_MAX_PWM);
         }else if(h == LIGHTMODE_AUTO_HOUR_END){
-          target_led_pwm = map(60-minute(),0,60,0, LIGHTMODE_AUTO_HOUR_MAX_PWM);
+          target_led_pwm = map(now.minute(),0,60,LIGHTMODE_AUTO_HOUR_MAX_PWM, 0);
         }
-        
       }
-    }
+    
 
     if(target_led_pwm != current_led_pwm){
       send_status("led", String(target_led_pwm));
@@ -340,15 +327,14 @@ void loop() {
           readString = "";
         }else if(cmd_started){
           readString += c; //makes the string readString
-        }
-          
+        }         
       }
     }
 
     if (readString.length() > 0) {
       
       const String cmd = getValue(readString, CMD_SEPERATION_CHARACTER, 0);
-      String cmd_value = getValue(readString, CMD_SEPERATION_CHARACTER, 1);
+      const String cmd_value = getValue(readString, CMD_SEPERATION_CHARACTER, 1);
       //st
       //sd
       if(cmd == "sb" && cmd_value != ""){
@@ -376,9 +362,8 @@ void loop() {
           const int is = sts.toInt();
           
           if(ih >0 && ih < 24 && im >0 && im < 60 && is >0 && is < 60){
-            tmElements_t tm;
-            RTC.read(tm);
-            setTime(ih, im, is, tm.Day, tm.Month, tm.Year);
+            DateTime now = rtc.now();
+            rtc.adjust(DateTime(now.year(), now.month(), now.day(), ih, im, is));
           }
         }
         DEBUG_SERIAL.println(sth + "::" + stm + "::" + sts);
@@ -393,9 +378,8 @@ void loop() {
           const int iyear = sdyear.toInt();
           
           if(iday > 0 && iday < 31 && imonth >0 && imonth < 12){
-            tmElements_t tm;
-            RTC.read(tm);
-            setTime(tm.Hour, tm.Minute, tm.Second, iday, imonth, tm.Year);
+            DateTime now = rtc.now();
+            rtc.adjust(DateTime(iyear, imonth, iday, now.hour(), now.minute(), now.second()));
           }
         }
         DEBUG_SERIAL.println(sdday + ".." + sdmonth + ".." + sdyear);

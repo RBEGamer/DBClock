@@ -41,7 +41,7 @@
 #define MDNS_NAME "dbclock"                                 // set hostname
 #define WEBSITE_TITLE "DB Wifi Module Configuration"  // name your device
 #define SERIAL_BAUD_RATE 9600
-#define NTP_SEND_TIME_INTERVAL 12*60 * 60  //sende zeit an uhr all x minuten
+#define NTP_SEND_TIME_INTERVAL 60*60  //sende zeit an uhr all x minuten
 #define DEFAULT_NTP_SERVER "pool.ntp.org"
 #define DEFAULT_TIMEZONE 1
 // END CONFIG ---------------------------------
@@ -232,7 +232,7 @@ void set_clock_time(const int _h, const int _m, const int _s) {
 }
 
 void set_clock_date(const int _day, const int _month, const int _year) {
-  send_cmd_str("sd", String(_day) + ":" + String(_month) + ":" + String(_year));
+  send_cmd_str("sd", String(_day) + "." + String(_month) + "." + String(_year));
 }
 
 void set_restdefaults(){
