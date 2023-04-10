@@ -8,7 +8,7 @@
 #define DEBUG_SERIAL Serial //USB
 #define LIGHTMODE_AUTO_HOUR_START 20
 #define LIGHTMODE_AUTO_HOUR_END 23
-#define LIGHTMODE_AUTO_HOUR_MAX_PWM 150
+#define LIGHTMODE_AUTO_HOUR_MAX_PWM 100
 
 #include <EEPROM.h>
 #include <Wire.h>
