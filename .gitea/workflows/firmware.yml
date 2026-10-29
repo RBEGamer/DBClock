@@ -1,0 +1,25 @@
+# BUILDS ALL PICO AND MEGA FIRMWARE VARIANTS IN DOCKER (ci/Dockerfile)
+# NEEDS AN act_runner WITH DOCKER ACCESS (DEFAULT: THE DOCKER SOCKET IS MOUNTED INTO THE JOB CONTAINER)
+# GITEA DOES NOT SUPPORT upload-artifact@v4, SO v3 IS USED
+name: firmware
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build firmware in Docker
+        run: sh ci/docker_build.sh "${GITHUB_REF_NAME}@$(echo "$GITHUB_SHA" | cut -c1-7)"
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: dbclock-firmware-${{ github.sha }}
+          path: dist/

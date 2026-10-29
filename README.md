@@ -136,6 +136,28 @@ All firmwares are [PlatformIO](https://platformio.org) projects. All used third 
 pio run -d src/bu190t -t upload
 ```
 
+### PREBUILT FIRMWARE (CI)
+
+All Pico and Mega variants are built in Docker (`ci/Dockerfile`) by the pipelines for GitHub Actions (`.github/workflows/firmware.yml`), Gitea Actions (`.gitea/workflows/firmware.yml`) and GitLab CI (`.gitlab-ci.yml`).
+The files are attached to each pipeline run as artifact `dbclock-firmware-<commit>`; on GitHub, a tag `v*` also creates a release with the files.
+
+| FILE                                    | USE                                                                |
+|-----------------------------------------|--------------------------------------------------------------------|
+| `dbclock-pico-rpipicow-<version>.uf2`   | Pico W / Pico, copy to the `RPI-RP2` drive (hold BOOTSEL while plugging in) |
+| `dbclock-pico-rpipico2w-<version>.uf2`  | Pico 2 W, copy to the `RP2350` drive                               |
+| `dbclock-pico-rpipico2-<version>.uf2`   | Pico 2 (LAN only), copy to the `RP2350` drive                      |
+| `dbclock-pico-<env>-<version>.bin`      | same firmware for the web update `http://<ip>/update`              |
+| `dbclock-mega-megaatmega2560-<version>.hex` | Arduino Mega, e.g. `avrdude -p m2560 -c wiring -P <port> -b 115200 -D -U flash:w:<file>:i` |
+| `SHA256SUMS`, `BUILDINFO.txt`           | checksums, versions and source commit                              |
+
+Build all variants locally with Docker, the files are written to `dist/`:
+
+```bash
+sh ci/docker_build.sh
+```
+
+Gitea needs an `act_runner` with Docker access (default), GitLab a runner that allows Docker-in-Docker (privileged, e.g. the shared runners on gitlab.com).
+
 ### DAYLIGHT SAVING
 
 The RTC of the Mega runs on standard time (`CET`, set timezone `1` in the webinterface).
@@ -215,7 +237,15 @@ Enter the MQTT broker of Home Assistant (e.g. the Mosquitto add-on) in the `Home
 With [MQTT discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery) (enabled by default) the clock appears as device `DBClock` with:
 
 * `light`: on/off, brightness 1-100 %, effect `Auto` (the automatic light mode of the clock)
+* `number`: `Brightness`, slider 0-100 %, shows the current brightness (also the level of the auto mode), 0 = off
+* `select`: `Light mode`, the modes of the clock: `Off`, `10 %`, `20 %`, `50 %`, `70 %`, `100 %`, `Auto`, `Manual`
+* `switch`: `Daylight saving` (configuration), the summer time setting of the Mega
 * `button`: `Sync time`, sends the NTP time to the clock
+* diagnostic sensors: `NTP server`, `Last NTP sync`, `NTP delay`, `Timezone`, `Daylight saving state`, `Clock time`, `Connection`, `IP address`, `WiFi signal`, `Uptime` (JSON on `<base>/diag`, updated every 60 s)
+
+The daylight saving state and the clock time are reported by the Mega (firmware 2.4.0 or newer) and need the GP1 feedback line.
+
+If the GP1 feedback line is connected, changes on the clock itself (push button, auto mode) are shown in Home Assistant as well.
 
 The discovery is sent after each connect and when Home Assistant comes online (`homeassistant/status`); `Send discovery` on the webinterface sends it again by hand.
 
@@ -228,6 +258,11 @@ The discovery is sent after each connect and when Home Assistant comes online (`
 | `<base>/light/set`              | HA → clock | `ON` / `OFF`            |
 | `<base>/light/brightness/set`   | HA → clock | `0`-`100`               |
 | `<base>/light/effect/set`       | HA → clock | `Auto` / `None`         |
+| `<base>/light/mode`             | clock → HA | `Off`, `10 %` ... `Auto`, `Manual` |
+| `<base>/light/mode/set`         | HA → clock | `Off`, `10 %` ... `Auto`, `Manual` |
+| `<base>/dls`                    | clock → HA | `ON` / `OFF`            |
+| `<base>/dls/set`                | HA → clock | `ON` / `OFF`            |
+| `<base>/diag`                   | clock → HA | JSON with the diagnostic values |
 | `<base>/sync/set`               | HA → clock | any                     |
 
 `<base>` is the `Base topic` from the webinterface, default `dbclock/<id>`. `<id>` is the end of the hostname, e.g. `46ae24` for `dbclock46ae24`.

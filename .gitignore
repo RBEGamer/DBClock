@@ -43,3 +43,6 @@ src/bu190t/3rd_party_libs/.DS_Store
 # PlatformIO
 .pio/
 .vscode/
+
+# Firmware build output (ci/docker_build.sh)
+dist/
