@@ -1,4 +1,4 @@
-#define VERSION "4.6.0"
+#define VERSION "4.7.0"
 // NETWORK INTERFACE FOR THE DBCLOCK
 // RASPBERRY PI PICO W (WIFI) + WIZNET ETHERNET HAT FOR PICO (W5100S, LAN)
 // REPLACES THE ESP8266 WIFI INTERFACE, SAME SERIAL PROTOCOL TO THE ARDUINO MEGA
@@ -52,6 +52,7 @@
 #define WIFI_RECONNECT_INTERVAL 30000                     // ms between reconnect attempts if the wifi got lost, also while the setup access point is open
 #define WIFI_JOIN_TIMEOUT 5000                            // ms, A JOIN BLOCKS UP TO THIS TIME, MUST STAY BELOW THE WATCHDOG TIMEOUT (CORE DEFAULT 15 s)
 #define STATUS_LOG_INTERVAL 30000                         // ms between network status lines on the usb serial
+#define MQTT_DIAG_INTERVAL 60000                          // ms between updates of the home assistant diagnostic sensors
 #define CONFIG_PORTAL_TIMEOUT 300                         // s, reboot and retry if no network got configured
 #define WATCHDOG_TIMEOUT 8000                             // ms, max 8300
 #define MQTT_DEFAULT_PORT 1883
@@ -130,6 +131,8 @@ String reported_ip = "";
 #define LIGHT_MODE_AUTO 6
 #define LIGHT_MODE_MANUAL 7
 const uint8_t LIGHT_MODE_PERCENT[] = { 0, 10, 20, 50, 70, 100 };
+// OPTIONS OF THE HOME ASSISTANT "Light mode" SELECT, INDEX = MODE
+const char* const LIGHT_MODE_NAMES[] = { "Off", "10 %", "20 %", "50 %", "70 %", "100 %", "Auto", "Manual" };
 uint8_t light_mode = 0;
 uint8_t light_percent = 0;          // PERCEIVED BRIGHTNESS 0-100
 uint8_t light_last_percent = 100;   // USED FOR ON WITHOUT BRIGHTNESS
@@ -141,6 +144,8 @@ bool mega_rx_started = false;
 unsigned long mega_last_rx = 0;
 String mega_rx_line = "";
 String mega_clock_time = "";
+int8_t dls_enabled = -1;            // DAYLIGHT SAVING SETTING OF THE MEGA, -1 = NOT REPORTED (GP1 NOT CONNECTED)
+bool dls_summer = false;            // EU SUMMER TIME IS ACTIVE ACCORDING TO THE MEGA RTC
 
 // MQTT, EMPTY HOST = DISABLED
 String mqtt_host = "";
@@ -170,6 +175,8 @@ String get_primary_ip();
 String hardware_label();
 String active_connection();
 void mqtt_publish_state();
+void mqtt_publish_diag();
+String json_escape(String _in);
 uint64_t get_local_us();
 struct tm get_local_tm(const uint64_t _local_us);
 
@@ -433,6 +440,15 @@ void light_set_on(const bool _on) {
   }
 }
 
+String dls_status_text() {
+  if (dls_enabled < 0) {
+    return "unknown (Mega TX3 to GP1 not connected)";
+  } else if (dls_enabled == 0) {
+    return "off";
+  }
+  return dls_summer ? "on, summer time (+1 h)" : "on, standard time";
+}
+
 String light_status_text() {
   if (!light_is_on()) {
     return "Off";
@@ -487,6 +503,19 @@ void handle_mega_frame(const String& _frame) {
     light_confirmed = true;
   } else if (cmd == "ct") {
     mega_clock_time = payload;
+  } else if (cmd == "ds") {
+    const int c = payload.indexOf(',');
+    if (c < 1) {
+      return;
+    }
+    const int8_t enabled = payload.substring(0, c).toInt() > 0 ? 1 : 0;
+    const bool summer = payload.substring(c + 1).toInt() > 0;
+    const bool changed = enabled != dls_enabled || summer != dls_summer;
+    dls_enabled = enabled;
+    dls_summer = summer;
+    if (changed) {
+      mqtt_publish_state();
+    }
   }
 }
 
@@ -537,12 +566,25 @@ void mqtt_clear_retained(const String _base) {
   mqtt.publish((_base + "/light/state").c_str(), "", true);
   mqtt.publish((_base + "/light/brightness").c_str(), "", true);
   mqtt.publish((_base + "/light/effect").c_str(), "", true);
+  mqtt.publish((_base + "/light/mode").c_str(), "", true);
+  mqtt.publish((_base + "/dls").c_str(), "", true);
+  mqtt.publish((_base + "/diag").c_str(), "", true);
 }
 
 String mqtt_device_json() {
   return "\"device\":{\"identifiers\":[\"dbclock_" + chip_id + "\"],\"name\":\"DBClock\",\"manufacturer\":\"DIY\","
          "\"model\":\"" + hardware_label() + "\",\"sw_version\":\"" + String(VERSION) + "\","
          "\"configuration_url\":\"http://" + get_primary_ip() + "/\"}";
+}
+
+// _extra: ADDITIONAL JSON FIELDS, EACH ENDING WITH A COMMA
+void mqtt_publish_diag_sensor(const String _key, const String _name, const String _icon, const String _extra) {
+  const String id = "dbclock_" + chip_id;
+  const String b = mqtt_base();
+  const String cfg = "{\"name\":\"" + _name + "\",\"unique_id\":\"" + id + "_" + _key + "\",\"availability_topic\":\"" + b + "/status\","
+                     "\"state_topic\":\"" + b + "/diag\",\"value_template\":\"{{ value_json." + _key + " }}\",\"entity_category\":\"diagnostic\","
+                     "\"icon\":\"" + _icon + "\"," + _extra + mqtt_device_json() + "}";
+  mqtt.publish((String(MQTT_DISCOVERY_PREFIX) + "/sensor/" + id + "/" + _key + "/config").c_str(), cfg.c_str(), true);
 }
 
 void mqtt_publish_discovery() {
@@ -555,6 +597,35 @@ void mqtt_publish_discovery() {
                        "\"effect_command_topic\":\"" + b + "/light/effect/set\",\"effect_state_topic\":\"" + b + "/light/effect\",\"effect_list\":[\"Auto\",\"None\"],"
                        "\"on_command_type\":\"brightness\"," + mqtt_device_json() + "}";
   mqtt.publish((String(MQTT_DISCOVERY_PREFIX) + "/light/" + id + "/light/config").c_str(), light.c_str(), true);
+  // BRIGHTNESS AS SLIDER, SHOWS THE CURRENT PERCENTAGE DIRECTLY (ALSO THE LEVEL OF THE AUTO MODE), 0 = OFF
+  const String brightness = "{\"name\":\"Brightness\",\"unique_id\":\"" + id + "_brightness\"," + availability +
+                            "\"command_topic\":\"" + b + "/light/brightness/set\",\"state_topic\":\"" + b + "/light/brightness\","
+                            "\"min\":0,\"max\":100,\"step\":1,\"mode\":\"slider\",\"unit_of_measurement\":\"%\",\"icon\":\"mdi:brightness-percent\"," + mqtt_device_json() + "}";
+  mqtt.publish((String(MQTT_DISCOVERY_PREFIX) + "/number/" + id + "/brightness/config").c_str(), brightness.c_str(), true);
+  // THE MODES OF THE CLOCK, LIKE THE BUTTONS ON THE WEBINTERFACE AND THE PUSH BUTTON
+  String options = "";
+  for (uint8_t i = 0; i <= LIGHT_MODE_MANUAL; i++) {
+    options += String(i ? "," : "") + "\"" + LIGHT_MODE_NAMES[i] + "\"";
+  }
+  const String mode = "{\"name\":\"Light mode\",\"unique_id\":\"" + id + "_mode\"," + availability +
+                      "\"command_topic\":\"" + b + "/light/mode/set\",\"state_topic\":\"" + b + "/light/mode\","
+                      "\"options\":[" + options + "],\"icon\":\"mdi:lightbulb-auto-outline\"," + mqtt_device_json() + "}";
+  mqtt.publish((String(MQTT_DISCOVERY_PREFIX) + "/select/" + id + "/mode/config").c_str(), mode.c_str(), true);
+  // DAYLIGHT SAVING OF THE MEGA, THE STATE IS ONLY KNOWN WITH THE GP1 FEEDBACK LINE
+  const String dls = "{\"name\":\"Daylight saving\",\"unique_id\":\"" + id + "_dls\"," + availability +
+                     "\"command_topic\":\"" + b + "/dls/set\",\"state_topic\":\"" + b + "/dls\",\"entity_category\":\"config\",\"icon\":\"mdi:weather-sunny-clock\"," + mqtt_device_json() + "}";
+  mqtt.publish((String(MQTT_DISCOVERY_PREFIX) + "/switch/" + id + "/dls/config").c_str(), dls.c_str(), true);
+  // DIAGNOSTIC SENSORS, ALL READ FROM THE JSON ON <base>/diag
+  mqtt_publish_diag_sensor("ntp_server", "NTP server", "mdi:server-network", "");
+  mqtt_publish_diag_sensor("ntp_delay", "NTP delay", "mdi:timer-outline", "\"unit_of_measurement\":\"ms\",\"state_class\":\"measurement\",");
+  mqtt_publish_diag_sensor("last_sync", "Last NTP sync", "mdi:clock-check-outline", "");
+  mqtt_publish_diag_sensor("timezone", "Timezone", "mdi:earth", "");
+  mqtt_publish_diag_sensor("dst", "Daylight saving state", "mdi:weather-sunny-clock", "");
+  mqtt_publish_diag_sensor("clock_time", "Clock time", "mdi:clock-outline", "");
+  mqtt_publish_diag_sensor("connection", "Connection", "mdi:lan-connect", "");
+  mqtt_publish_diag_sensor("ip", "IP address", "mdi:ip-network", "");
+  mqtt_publish_diag_sensor("wifi_rssi", "WiFi signal", "mdi:wifi", "\"unit_of_measurement\":\"dBm\",\"device_class\":\"signal_strength\",\"state_class\":\"measurement\",");
+  mqtt_publish_diag_sensor("uptime", "Uptime", "mdi:timer-sand", "\"unit_of_measurement\":\"s\",\"device_class\":\"duration\",");
   const String sync = "{\"name\":\"Sync time\",\"unique_id\":\"" + id + "_sync\"," + availability +
                       "\"command_topic\":\"" + b + "/sync/set\",\"icon\":\"mdi:clock-check-outline\"," + mqtt_device_json() + "}";
   mqtt.publish((String(MQTT_DISCOVERY_PREFIX) + "/button/" + id + "/sync/config").c_str(), sync.c_str(), true);
@@ -568,6 +639,33 @@ void mqtt_publish_state() {
   mqtt.publish((b + "/light/state").c_str(), light_is_on() ? "ON" : "OFF", true);
   mqtt.publish((b + "/light/brightness").c_str(), String(light_percent).c_str(), true);
   mqtt.publish((b + "/light/effect").c_str(), light_mode == LIGHT_MODE_AUTO ? "Auto" : "None", true);
+  mqtt.publish((b + "/light/mode").c_str(), LIGHT_MODE_NAMES[min(light_mode, (uint8_t)LIGHT_MODE_MANUAL)], true);
+  if (dls_enabled >= 0) {
+    mqtt.publish((b + "/dls").c_str(), dls_enabled ? "ON" : "OFF", true);
+  }
+  mqtt_publish_diag();
+}
+
+// NULL = UNKNOWN IN HOME ASSISTANT
+void mqtt_publish_diag() {
+  if (!mqtt.connected()) {
+    return;
+  }
+  String json = "{";
+  if (ntp_time_set) {
+    const struct tm sync_tm = get_local_tm(ntp_utc_us + (int64_t)timezone * 3600LL * 1000000LL);
+    json += "\"ntp_server\":\"" + json_escape(ntp_server_name) + " (" + ntp_server_ip + ")\",\"ntp_delay\":" + String(ntp_delay_ms) + ","
+            "\"last_sync\":\"" + format_date(sync_tm) + " " + format_time(sync_tm) + "\",";
+  } else {
+    json += "\"ntp_server\":null,\"ntp_delay\":null,\"last_sync\":\"never\",";
+  }
+  json += "\"timezone\":\"UTC" + String(timezone >= 0 ? "+" : "") + String(timezone) + "\","
+          "\"dst\":\"" + dls_status_text() + "\","
+          "\"clock_time\":" + (mega_link_ok() ? "\"" + json_escape(mega_clock_time) + "\"" : String("null")) + ","
+          "\"connection\":\"" + active_connection() + "\",\"ip\":\"" + get_primary_ip() + "\","
+          "\"wifi_rssi\":" + (wifi_connected() ? String(WiFi.RSSI()) : String("null")) + ","
+          "\"uptime\":" + String(millis() / 1000) + "}";
+  mqtt.publish((mqtt_base() + "/diag").c_str(), json.c_str(), true);
 }
 
 void mqtt_callback(char* _topic, byte* _payload, unsigned int _length) {
@@ -588,6 +686,14 @@ void mqtt_callback(char* _topic, byte* _payload, unsigned int _length) {
       light_set_mode(LIGHT_MODE_AUTO);
     } else if (light_mode == LIGHT_MODE_AUTO) {
       light_set_percent(light_last_percent);
+    }
+  } else if (topic == b + "/dls/set") {
+    send_cmd_str("dls", msg.equalsIgnoreCase("ON") ? "1" : "0");  // THE MEGA REPORTS THE NEW STATE
+  } else if (topic == b + "/light/mode/set") {
+    for (uint8_t i = 0; i <= LIGHT_MODE_MANUAL; i++) {
+      if (msg == LIGHT_MODE_NAMES[i]) {
+        light_set_mode(i);
+      }
     }
   } else if (topic == b + "/sync/set") {
     ntp_force_update = true;
@@ -656,6 +762,7 @@ void mqtt_loop() {
   mqtt.subscribe((b + "/light/set").c_str());
   mqtt.subscribe((b + "/light/+/set").c_str());
   mqtt.subscribe((b + "/sync/set").c_str());
+  mqtt.subscribe((b + "/dls/set").c_str());
   mqtt.subscribe((String(MQTT_DISCOVERY_PREFIX) + "/status").c_str());
   mqtt_publish_discovery();
   mqtt_publish_state();
@@ -923,7 +1030,7 @@ void handleRoot() {
           "<div class='two'><div class='field'><label for='ntp2'>Fallback NTP server 1</label><input id='ntp2' name='ntp_server_url2' value='" + html_escape(ntp_server_url[1]) + "' placeholder='empty = off' autocapitalize='none'></div>"
           "<div class='field'><label for='ntp3'>Fallback NTP server 2</label><input id='ntp3' name='ntp_server_url3' value='" + html_escape(ntp_server_url[2]) + "' placeholder='empty = off' autocapitalize='none'></div></div>"
           "<button class='primary'>Save</button></form>"
-          "<label class='mt'>Daylight saving (EU summer time)</label>"
+          "<label class='mt'>Daylight saving (EU summer time): " + html_escape(dls_status_text()) + "</label>"
           "<form action='/save' class='two'><button name='dls' value='1'>On</button><button name='dls' value='0'>Off</button></form></section>";
 
   // HOME ASSISTANT
@@ -1046,7 +1153,7 @@ void handleApiStatus() {
   const String json = "{\"version\":\"" + String(VERSION) + "\",\"hostname\":\"" + hostname + "\",\"hardware\":\"" + hardware_label() + "\","
                       "\"connection\":\"" + active_connection() + "\",\"ip\":\"" + get_primary_ip() + "\","
                       "\"time\":{" + time_json + "},"
-                      "\"clock_link\":{\"ok\":" + String(mega_link_ok() ? "true" : "false") + ",\"clock_time\":\"" + json_escape(mega_clock_time) + "\"},"
+                      "\"clock_link\":{\"ok\":" + String(mega_link_ok() ? "true" : "false") + ",\"clock_time\":\"" + json_escape(mega_clock_time) + "\",\"daylight_saving\":\"" + json_escape(dls_status_text()) + "\"},"
                       "\"light\":" + light_json() + ","
                       "\"mqtt\":\"" + json_escape(mqtt_state) + "\",\"mqtt_topic\":\"" + json_escape(mqtt_base()) + "\"}";
   send_json(200, json);
@@ -1303,6 +1410,11 @@ void setup(void) {
     rp2040.wdt_reset();
   });
   ArduinoOTA.begin();
+  // THE WEB UPDATE (/update) RECEIVES THE WHOLE FILE INSIDE server.handleClient(), THE LOOP DOES NOT RUN
+  // ON A SLOW CONNECTION THIS TAKES LONGER THAN THE WATCHDOG TIMEOUT, SO RESET IT FOR EVERY WRITTEN BLOCK
+  Update.onProgress([](size_t, size_t) {
+    rp2040.wdt_reset();
+  });
   //SETUP  NTP CLIENT
   ntpUDP.begin(NTP_LOCAL_PORT);
   //SETUP MQTT
@@ -1462,6 +1574,11 @@ void loop(void) {
   } else if (wifi_present && wifi_ssid.length() > 0 && !wifi_connected() && (millis() - wifi_last_reconnect) > WIFI_RECONNECT_INTERVAL) {
     wifi_connect();
   }
+  static unsigned long last_diag = 0;
+  if ((millis() - last_diag) > MQTT_DIAG_INTERVAL) {
+    last_diag = millis();
+    mqtt_publish_diag();
+  }
   static unsigned long last_status_log = 0;
   if ((millis() - last_status_log) > STATUS_LOG_INTERVAL) {
     last_status_log = millis();
@@ -1478,6 +1595,7 @@ void loop(void) {
     led_state = !led_state;
     digitalWrite(LED_BUILTIN, led_state);
     if (sync_clock_from_ntp()) {
+      mqtt_publish_diag();
       next_sync_in = 1000UL * NTP_SEND_TIME_INTERVAL;
     } else {
       next_sync_in = 1000UL * NTP_RETRY_INTERVAL;

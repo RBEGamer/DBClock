@@ -3,7 +3,7 @@
 #define EEPROM_INDEX_DLS 1
 #define EEPROM_INDEX_LED_PERCENT 2
 #define RTC_TIMEZONE 1 //0=UTC ,1=MEZ, RTC RUNS ON STANDARD TIME, MUST MATCH THE TIMEZONE OF THE NETWORK MODULE
-#define VERSION "2.3.0"
+#define VERSION "2.4.0"
 #define WIFIEXTENTION_SERIAL Serial3 // TO ESP8266
 #define CLOCK_SERIAL Serial2
 #define DEBUG_SERIAL Serial //USB
@@ -62,6 +62,7 @@ bool cmd_complete = false;
 uint8_t led_mode = 0;
 uint8_t manual_led_percent = 100;
 uint8_t daylightsaving_enabled = 0;
+bool summertime_now = false; // EU SUMMER TIME IS ACTIVE ACCORDING TO THE RTC, INDEPENDENT OF daylightsaving_enabled
 
 
 RTC_DS1307 rtc;
@@ -274,11 +275,13 @@ void update_according_led_mode(const uint8_t _led_mode){
 }
 
 // %ls_<MODE>,<PERCEIVED BRIGHTNESS 0-100>, READ BY THE NETWORK MODULE FOR HOME ASSISTANT
+// %ds_<DAYLIGHT SAVING ENABLED 0/1>,<SUMMER TIME NOW 0/1>, SENT TOGETHER WITH THE LIGHT STATE
 void send_led_state(){
   reported_led_mode = led_mode;
   reported_led_level = target_led_level;
   last_led_state = millis();
   send_status("ls", String(led_mode) + "," + String(((uint16_t)target_led_level * 100 + 127) / 255));
+  send_status("ds", String(daylightsaving_enabled > 0 ? 1 : 0) + "," + String(summertime_now ? 1 : 0));
 }
   
 
@@ -324,7 +327,8 @@ void loop() {
     DEBUG_SERIAL.println(".");
       int h = now.hour();
       // RTC RUNS ON STANDARD TIME, ADD ONE HOUR DURING SUMMER TIME
-      if (daylightsaving_enabled > 0 && summertime_eu(now.year(), now.month(), now.day(), h))
+      summertime_now = summertime_eu(now.year(), now.month(), now.day(), h);
+      if (daylightsaving_enabled > 0 && summertime_now)
       {
         h = (h + 1) % 24;
       }
@@ -412,6 +416,7 @@ void loop() {
         if(dlsi >= 0 && dlsi < 2){
           daylightsaving_enabled = dlsi;
           EEPROM.write(EEPROM_INDEX_DLS, daylightsaving_enabled);
+          send_led_state();
         }
       }else if(cmd == "st" && cmd_value != ""){ //SET TIME
         const String sth = getValue(cmd_value, ':', 0);
