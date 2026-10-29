@@ -86,19 +86,19 @@ send_time_to_clock(13,14,15)
 delay(1000); 
 }
 void send_time_to_clock(const uint8_t _h, const uint8_t _m, const uint8_t _s, bool _signal_ok = true){
-  const uint8_t sec = max(_s, 60);
+  const uint8_t sec = _s % 60;
   String s = String(sec);
   if(sec<10){
     s="0"+s;
   }
 
-  const uint8_t min = max(_m, 60);
+  const uint8_t min = _m % 60;
   String m = String(min);
   if(min<10){
     m="0"+m;
   }
 
-  const uint8_t hour = max(_h, 24);
+  const uint8_t hour = _h % 24;
   String h = String(hour);
   if(hour<10){
     h="0"+h;
@@ -117,10 +117,72 @@ void send_time_to_clock(const uint8_t _h, const uint8_t _m, const uint8_t _s, bo
 In my case i used a Arduino Mega, with more than one hardware serial interface.
 The desing is using `Serial2` for the clock drive and `Serial` to communicate with the PC or ESP8266 for NTP Sync.
 By using a RTC like the `DS3231` in combination with the `ESP8266` for NTP sync, you get a very stable self syncing clock!
-The the `src` directory for the Arduino and `ESP866` sources.
+See the `src` directory for the Arduino and `ESP8266` sources.
 
  ![Arduino](https://user-images.githubusercontent.com/9280991/218880766-d55ab539-9287-48b1-9fd1-46a60e43f065.jpg)
 
+
+## FIRMWARE
+
+All firmwares are [PlatformIO](https://platformio.org) projects. All used third party libraries are stored in the `lib` folder of each project, so no library downloads are needed.
+
+| PROJECT              | HARDWARE                                  | DEFAULT ENV       |
+|----------------------|-------------------------------------------|-------------------|
+| `src/bu190t`         | Arduino Mega 2560 (clock drive, RTC, LED) | `megaatmega2560`  |
+| `src/wifiinterface`  | ESP8266 (NodeMCU or ESP-01)               | `nodemcu`, `esp01_1m` |
+| `src/picowinterface` | Raspberry Pi Pico W + WIZnet Ethernet HAT | `rpipicow`        |
+
+```bash
+pio run -d src/bu190t -t upload
+```
+
+### DAYLIGHT SAVING
+
+The RTC of the Mega runs on standard time (`CET`, set timezone `1` in the webinterface).
+If daylight saving is enabled, the Mega adds one hour from the last Sunday in March (02:00) until the last Sunday in October (03:00 CEST).
+
+
+
+## ALTERNATIVE NETWORK INTERFACE: PICO W + ETHERNET HAT (WIFI AND LAN)
+
+Instead of the `ESP8266`, a `Raspberry Pi Pico W` with the `WIZnet Ethernet HAT for Pico` (`W5100S-L`) can be used.
+It supports WiFi and LAN at the same time; LAN is preferred if both are connected.
+The firmware is located in `src/picowinterface` and uses the same serial protocol, so the Arduino Mega firmware does not need to be changed.
+
+* [Raspberry Pi Pico W](https://www.raspberrypi.com/products/raspberry-pi-pico/)
+* [WIZnet Ethernet HAT for Pico](https://docs.wiznet.io/Product/Open-Source-Hardware/wiznet_ethernet_hat)
+
+### BUILD
+
+The project uses the [arduino-pico](https://github.com/earlephilhower/arduino-pico) core via the PlatformIO platform `maxgerhardt/platform-raspberrypi`, with 1MB of the 2MB flash as filesystem; it stores the settings and is needed for OTA updates.
+
+```bash
+pio run -d src/picowinterface
+```
+
+For the first upload, hold `BOOTSEL` while plugging in the Pico W and copy `src/picowinterface/.pio/build/rpipicow/firmware.uf2` to the `RPI-RP2` drive.
+
+### WIRING
+
+The HAT is stacked onto the Pico W and uses `SPI0`: `GP16` MISO, `GP17` CS, `GP18` SCK, `GP19` MOSI, `GP20` RST.
+
+| Pico W           | Arduino Mega  | NOTE                                                  |
+|------------------|---------------|-------------------------------------------------------|
+| GP0 (UART0 TX)   | RX3 (pin 15)  | 3.3V signal, the Mega reads it fine                   |
+| GND              | GND           |                                                       |
+| VSYS             | 5V            | or a separate 5V supply, see below                    |
+
+**NOTE** The Pico W is not 5V tolerant. Do not connect the Mega `TX3` to `GP1` without a level shifter; the firmware does not need it.
+
+**NOTE** WiFi + W5100S draw up to ~200 mA. If the Mega is powered with 12V on `VIN`, its linear regulator gets hot; a small 12V to 5V buck converter for the Pico W is recommended.
+
+### USAGE
+
+* On boot, the module tries LAN (DHCP) first, then WiFi with the stored credentials.
+* If neither connects, an open access point `DBClockConfiguration_<id>` with a captive portal is started. Enter the WiFi credentials there; the module reboots and connects. If a LAN cable is plugged in, the access point is closed automatically.
+* Leave the WiFi settings empty (or press `DELETE WIFI (LAN ONLY)`) to use LAN only.
+* Webinterface: `http://dbclock<id>.local` or the IP printed on the Pico W USB serial (115200 baud). The IP is also sent to the Mega as `%ip_` command.
+* Firmware updates: upload `.pio/build/rpipicow/firmware.bin` on `http://<ip>/update`, or use Arduino OTA.
 
 
 
@@ -136,6 +198,9 @@ The the `src` directory for the Arduino and `ESP866` sources.
 The old lamp was replaced with a neutral-white 12B led strip with 144 LEDs/m.
 Using a mosfet connected to the Arduino PWM GPIO `Pin 8`, so it is possible to control the strip using software.
 The current implementation, allows fade up/down on predefined times, on/off from 0-100%.
+
+The brightness levels are perceived brightness: a gamma curve (`LED_GAMMA 2.2`) converts them to the PWM duty cycle, so the `10%`, `20%`, `50%`, `70%`, `100%` modes and the fades look even to the eye.
+In `AUTO` mode the strip fades in from 20:00 to 20:20, stays on until 23:00 and fades out until 23:59.
 
 
 ### BUTTON
@@ -182,3 +247,25 @@ Four `M8x30` with lock nuts were used to attach the clock to the milled stand.
 
 
 
+
+
+## THIRD PARTY LIBRARIES AND LICENSES
+
+The firmware in this repository is licensed under the Apache License 2.0 (see `LICENSE`).
+The following third party libraries are included unmodified in the `lib` folders and keep their own licenses; the license text is part of each library folder or source header.
+
+| LIBRARY                                                         | VERSION    | USED BY                          | LICENSE      | AUTHOR             |
+|-----------------------------------------------------------------|------------|----------------------------------|--------------|--------------------|
+| [RTClib](https://github.com/adafruit/RTClib)                    | 2.1.0      | `bu190t`                         | MIT          | Adafruit           |
+| [Adafruit BusIO](https://github.com/adafruit/Adafruit_BusIO)    | 1.14.1     | `bu190t`                         | MIT          | Adafruit           |
+| [NTPClient](https://github.com/arduino-libraries/NTPClient)     | 3.2.1      | `wifiinterface`, `picowinterface` | MIT         | Fabrice Weinberg   |
+| [Time](https://github.com/PaulStoffregen/Time)                  | 1.6.1      | `wifiinterface`                  | LGPL-2.1     | Michael Margolis   |
+| [WiFiManager](https://github.com/tzapu/WiFiManager)             | 2.0.0-rc.1 | `wifiinterface`                  | MIT          | tzapu              |
+
+The Arduino frameworks are installed by PlatformIO and are not part of this repository. They also provide the core libraries (`Wire`, `EEPROM`, `SPI`, `WiFi`, `WebServer`, `LittleFS`, `ArduinoOTA`, lwIP and the W5100 driver):
+
+| FRAMEWORK                                                              | USED BY          | LICENSE   |
+|------------------------------------------------------------------------|------------------|-----------|
+| [ArduinoCore-avr](https://github.com/arduino/ArduinoCore-avr)           | `bu190t`         | LGPL-2.1  |
+| [ESP8266 Arduino core](https://github.com/esp8266/Arduino)              | `wifiinterface`  | LGPL-2.1  |
+| [arduino-pico](https://github.com/earlephilhower/arduino-pico)          | `picowinterface` | LGPL-2.1  |
