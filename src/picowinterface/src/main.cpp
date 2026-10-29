@@ -1,4 +1,4 @@
-#define VERSION "4.1.0"
+#define VERSION "4.2.0"
 // NETWORK INTERFACE FOR THE DBCLOCK
 // RASPBERRY PI PICO W (WIFI) + WIZNET ETHERNET HAT FOR PICO (W5100S, LAN)
 // REPLACES THE ESP8266 WIFI INTERFACE, SAME SERIAL PROTOCOL TO THE ARDUINO MEGA
@@ -16,7 +16,6 @@
 #include <HTTPUpdateServer.h>
 #include <ArduinoOTA.h>
 #include <WiFiUdp.h>
-#include <NTPClient.h>
 #include <time.h>
 #include <pico/unique_id.h>
 
@@ -30,11 +29,13 @@
 // CONFIG -------------------------------------
 #define WEBSERVER_PORT 80                                 // set the port for the webserver eg 80 8080
 #define MDNS_NAME "dbclock"                               // set hostname
-#define WEBSITE_TITLE "DB Network Module Configuration"   // name your device
 #define SERIAL_BAUD_RATE 9600
 #define NTP_SEND_TIME_INTERVAL 60*60                      // sende zeit an uhr alle x sekunden
 #define NTP_RETRY_INTERVAL 30                             // retry after x seconds if the ntp sync failed
 #define DEFAULT_NTP_SERVER "pool.ntp.org"
+#define NTP_LOCAL_PORT 2390
+#define NTP_TIMEOUT 1500                                  // ms to wait for the ntp answer
+#define NTP_UNIX_OFFSET 2208988800ULL                     // s BETWEEN 1900 AND 1970
 #define DEFAULT_TIMEZONE 1
 #define ETH_CONNECT_TIMEOUT 10000                         // ms to wait for a dhcp lease on the lan port
 #define WIFI_CONNECT_TIMEOUT 20000                        // ms to wait for the wifi connection
@@ -61,7 +62,6 @@
 
 
 
-String time_last = "not synced";
 unsigned long last = 0;
 unsigned long next_sync_in = 0;
 bool ntp_force_update = true;
@@ -84,12 +84,13 @@ String wifi_pass = "";
 String last_error = "";
 String chip_id = "";
 String hostname = "";
-int rtc_hours = 0;
-int rtc_mins = 0;
-int rtc_secs = 0;
-int rtc_day = 1;
-int rtc_month = 1;
-int rtc_year = 2020;
+
+// NTP STATE, MICROSECOND RESOLUTION
+bool ntp_time_set = false;
+uint64_t ntp_utc_us = 0;       // UTC AT ntp_sync_us
+uint64_t ntp_sync_us = 0;      // time_us_64() OF THE LAST SYNC
+int32_t ntp_delay_ms = 0;      // NETWORK ROUND TRIP OF THE LAST SYNC
+String ntp_server_ip = "";
 
 // NETWORK STATE
 bool wifi_present = false;
@@ -107,105 +108,61 @@ DNSServer dns_server;
 Wiznet5100lwIP eth(ETH_PIN_CS, SPI, ETH_PIN_INT);
 
 WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, DEFAULT_NTP_SERVER, 0, 60000);
+
+bool has_network();
+uint64_t get_local_us();
+struct tm get_local_tm(const uint64_t _local_us);
 
 
 
 
 
 
-const String phead_1 = "<!DOCTYPE html><html><head><title>";
-const String phead_2 = "</title>"
-                       "<meta http-equiv='content-type' content='text/html; charset=utf-8'>"
-                       "<meta charset='utf-8'>"
-                       "<meta name='viewport' content='width=device-width, initial-scale=1'>"
-                       "<style>"
-                       "html, body {"
-                       "  background: #F2F2F2;"
-                       " width: 100%;"
-                       " height: 100%;"
-                       " margin: 0px;"
-                       " padding: 0px;"
-                       " font-family: 'Verdana';"
-                       " font-size: 16px;"
-                       " color: #404040;"
-                       " }"
-                       "img {"
-                       " border: 0px;"
-                       "}"
-                       "span.title {"
-                       " display: block;"
-                       " color: #000000;"
-                       " font-size: 30px;"
-                       "}"
-                       "span.subtitle {"
-                       " display: block;"
-                       " color: #000000;"
-                       " font-size: 20px;"
-                       "}"
-                       ".sidebar {"
-                       " background: #FFFFFF;"
-                       " width: 250px;"
-                       " min-height: 100%;"
-                       " height: 100%;"
-                       " height: auto;"
-                       " position: fixed;"
-                       " top: 0px;"
-                       " left: 0px;"
-                       " border-right: 1px solid #D8D8D8;"
-                       "}"
-                       ".logo {"
-                       " padding: 25px;"
-                       " text-align: center;"
-                       " border-bottom: 1px solid #D8D8D8;"
-                       "}"
-                       ".menu {"
-                       " padding: 25px 0px 25px 0px;"
-                       " border-bottom: 1px solid #D8D8D8;"
-                       "}"
-                       ".menu a {"
-                       " padding: 15px 25px 15px 25px;"
-                       " display: block;"
-                       " color: #000000;"
-                       " text-decoration: none;"
-                       " transition: all 0.25s;"
-                       "}"
-                       ".menu a:hover {"
-                       " background: #0088CC;"
-                       " color: #FFFFFF;"
-                       "}"
-                       ".right {"
-                       " margin-left: 250px;"
-                       " padding: 50px;"
-                       "}"
-                       ".content {"
-                       " background: #FFFFFF;"
-                       " padding: 25px;"
-                       " border-radius: 5px;"
-                       " border: 1px solid #D8D8D8;"
-                       "}"
-                       "@media (max-width: 700px) {"
-                       " .sidebar { position: static; width: 100%; min-height: 0; border-right: 0; }"
-                       " .right { margin-left: 0px; padding: 16px; }"
-                       "}"
-                       "</style>";
+// WEBINTERFACE, NO EXTERNAL RESOURCES SO IT ALSO WORKS IN THE CONFIGURATION ACCESS POINT
+const char PAGE_HEAD[] PROGMEM = R"HTML(<!DOCTYPE html><html lang='en'><head>
+<meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>
+<title>DBClock</title>
+<style>
+:root{--bg:#f3f4f6;--card:#fff;--text:#111827;--muted:#6b7280;--line:#e5e7eb;--soft:#f9fafb;--accent:#d61f26;--ok:#15803d;--okbg:#dcfce7;--warn:#b45309;--warnbg:#fef3c7;--danger:#b91c1c}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1117;--card:#161b22;--text:#e6edf3;--muted:#8b949e;--line:#30363d;--soft:#0d1117;--ok:#3fb950;--okbg:#12261a;--warn:#d29922;--warnbg:#2b2111;--danger:#f85149}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}
+.wrap{max-width:620px;margin:0 auto;padding:16px}
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:4px 0 16px}
+.brand{display:flex;align-items:center;gap:10px;min-width:0}
+.brand svg{flex:none}
+.brand b{display:block;font-size:19px}
+.brand small{display:block;color:var(--muted);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
+h2{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 12px}
+.time{font-size:clamp(44px,14vw,64px);font-weight:700;line-height:1.05;font-variant-numeric:tabular-nums}
+.sub{color:var(--muted);font-size:14px;margin-top:4px}
+.pill{flex:none;font-size:12px;font-weight:700;padding:5px 10px;border-radius:99px;background:var(--okbg);color:var(--ok)}
+.pill.off{background:var(--warnbg);color:var(--warn)}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.grid .wide{grid-column:1/-1}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+button,.btn{display:flex;align-items:center;justify-content:center;width:100%;min-height:44px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--soft);color:var(--text);font:inherit;font-weight:600;text-align:center;text-decoration:none;cursor:pointer}
+button:active,.btn:active{transform:scale(.98)}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.danger{color:var(--danger)}
+input{width:100%;min-height:44px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--soft);color:var(--text);font:inherit}
+label{display:block;font-size:14px;color:var(--muted);margin:0 0 6px}
+.field{margin-bottom:12px}
+.mt{margin-top:12px}
+.row{display:flex;justify-content:space-between;gap:16px;padding:9px 0;border-top:1px solid var(--line);font-size:15px}
+.row:first-of-type{border-top:0;padding-top:0}
+.row span:first-child{color:var(--muted);flex:none}
+.row span:last-child{text-align:right;overflow-wrap:anywhere}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--ok);margin-right:6px;vertical-align:middle}
+.dot.off{background:var(--muted)}
+form{margin:0}
+.msg{font-size:14px;color:var(--muted);overflow-wrap:anywhere}
+footer{text-align:center;color:var(--muted);font-size:12px;padding:4px 0 24px}
+</style></head><body><div class='wrap'>
+<header><div class='brand'><svg width='36' height='36' viewBox='0 0 36 36' aria-hidden='true'><circle cx='18' cy='18' r='16' fill='none' stroke='currentColor' stroke-width='2.5'/><path d='M18 8v10l6 4' fill='none' stroke='currentColor' stroke-width='2.5' stroke-linecap='round'/><circle cx='18' cy='18' r='2' fill='#d61f26'/></svg><div><b>DBClock</b><small>)HTML";
 
-const String pstart = "</head>"
-                      "<body>"
-                      "<div class='sidebar'>"
-                      "<div class='logo'>"
-                      "<span class='title'>DBClock - NETWORK MODULE</span>"
-                      "<span class='subtitle'>- Configuration -</span>"
-                      "</div>"
-                      "<div class='menu'>"
-                      "<a href='index.html'>Settings</a>"
-                      "<a href='update'>Firmware Update</a>"
-                      "</div>"
-                      "</div>"
-                      "<div class='right'>"
-                      "<div class='content'>";
-
-const String pend = "</div></div></body></html>";
+const char PAGE_END[] PROGMEM = R"HTML(</div></body></html>)HTML";
 
 
 
@@ -231,18 +188,27 @@ uint16_t crc16(String _data, uint16_t _poly = 0x8408) {
   return crc & 0xFFFF;
 }
 
+// %<CMD>_<PAYLOAD>_<CRC>\r\n
+String build_cmd_frame(const String _command, const String _payload) {
+  return "%" + _command + "_" + _payload + "_" + crc16(_command + _payload) + "\r\n";
+}
+
 void send_cmd_str(const String _command, const String _payload) {
-  const String cmd = "%" + _command + "_" + _payload + "_" + crc16(_command + _payload);
-  CLOCK_SERIAL.println(cmd);
-  DEBUG_SERIAL.println(cmd);
+  const String frame = build_cmd_frame(_command, _payload);
+  CLOCK_SERIAL.print(frame);
+  DEBUG_SERIAL.print(frame);
 }
 
-void set_clock_time(const int _h, const int _m, const int _s) {
-  send_cmd_str("st", String(_h) + ":" + String(_m) + ":" + String(_s));
+String two_digits(const int _v) {
+  return (_v < 10 ? "0" : "") + String(_v);
 }
 
-void set_clock_date(const int _day, const int _month, const int _year) {
-  send_cmd_str("sd", String(_day) + "." + String(_month) + "." + String(_year));
+String format_time(const struct tm& _t) {
+  return two_digits(_t.tm_hour) + ":" + two_digits(_t.tm_min) + ":" + two_digits(_t.tm_sec);
+}
+
+String format_date(const struct tm& _t) {
+  return two_digits(_t.tm_mday) + "." + two_digits(_t.tm_mon + 1) + "." + String(_t.tm_year + 1900);
 }
 
 void set_restdefaults(){
@@ -265,18 +231,11 @@ String read_file(const char* _file, String _default = "") {
   return tmp;
 }
 
-// NTPCLIENT ONLY STORES THE POINTER, SO SET IT AGAIN AFTER EACH CHANGE OF ntp_server_url
-void apply_ntp_settings() {
-  timeClient.setPoolServerName(ntp_server_url.c_str());
-  timeClient.setTimeOffset(timezone * 3600);
-}
-
 void restore_eeprom_values() {
   ntp_server_url = read_file(file_ntp_server, DEFAULT_NTP_SERVER);
   timezone = read_file(file_timezone, String(DEFAULT_TIMEZONE)).toInt();
   wifi_ssid = read_file(file_wifi_ssid, "");
   wifi_pass = read_file(file_wifi_pass, "");
-  apply_ntp_settings();
 }
 
 bool write_file(const char* _file, String _content) {
@@ -376,6 +335,7 @@ void handleSave() {
       write_deffault_to_eeprom();  //LOAD FACOTRY RESET
     } else if (server.argName(i) == "sendtime") {
       ntp_force_update = true;
+      last_error = "time will be sent to the clock";
     } else if (server.argName(i) == "reboot") {
       last_error = "rebooting";
       reboot_requested = millis();
@@ -383,15 +343,21 @@ void handleSave() {
       // RAW POST BODY, NOTHING TO DO
     } else {
       send_cmd_str(server.argName(i), server.arg(i));  //SEND ALL OTHER COMMANDS TO THE CLOCK DIRECTLY
+      last_error = "sent to clock: " + server.argName(i) + " = " + server.arg(i);
     }
   }
   //SAVE THESE DATA
-  apply_ntp_settings();
   if (save) {
     save_values_to_eeprom();
   }
 
-  server.send(200, "text/html", "<html><head><meta http-equiv='refresh' content='" + String(reboot_requested ? 10 : 1) + "; url=/' /></head><body>SAVE SETTINGS PLEASE WAIT</body></html>");
+  String page = FPSTR(PAGE_HEAD);
+  page += html_escape(hostname) + "</small></div></div></header>";
+  // BACK TO THE MAIN PAGE, LONGER AFTER A REBOOT
+  page += "<script>setTimeout(function(){location.href='/'}," + String(reboot_requested ? 10000 : 1200) + ")</script>";
+  page += "<section class='card'><h2>" + String(reboot_requested ? "Rebooting" : "Saved") + "</h2><div class='msg'>" + html_escape(last_error) + "</div></section>";
+  page += FPSTR(PAGE_END);
+  server.send(200, "text/html", page);
 }
 
 
@@ -400,6 +366,21 @@ void handleSave() {
 // IN AP MODE WiFi.status() ALSO REPORTS WL_CONNECTED, SO THE STATION IP IS CHECKED AS WELL
 bool wifi_connected() {
   return wifi_present && !config_portal_active && WiFi.status() == WL_CONNECTED && WiFi.localIP().isSet();
+}
+
+String hardware_label() {
+  return String(wifi_present ? "Pico W" : "Pico") + (eth_present ? " + W5100S" : "");
+}
+
+String active_connection() {
+  if (eth_present && eth.connected()) {
+    return "LAN";
+  } else if (wifi_connected()) {
+    return "WiFi";
+  } else if (config_portal_active) {
+    return "Setup AP";
+  }
+  return "Offline";
 }
 
 String network_mode() {
@@ -413,94 +394,115 @@ String network_mode() {
   return "NO NETWORK HARDWARE";
 }
 
+String status_row(const String _label, const String _value) {
+  return "<div class='row'><span>" + _label + "</span><span>" + _value + "</span></div>";
+}
+
+String dot(const bool _on) {
+  return String("<i class='dot") + (_on ? "" : " off") + "'></i>";
+}
+
 String network_status() {
-  String s = "<hr><h2>NETWORK</h2><p><b>MODE:</b> " + network_mode() + "<br>";
+  String s = "<section class='card'><h2>Network</h2>";
   // LAN
-  s += "<b>LAN (W5100S):</b> ";
+  String lan;
   if (!eth_present) {
-    s += "not detected";
+    lan = dot(false) + "not detected";
   } else if (eth.connected()) {
-    s += "connected, " + eth.localIP().toString();
+    lan = dot(true) + eth.localIP().toString();
   } else {
     // THE W5100S DRIVER CAN NOT DETECT THE LINK STATE
-    s += "no cable or waiting for DHCP";
+    lan = dot(false) + "no cable or waiting for DHCP";
   }
-  s += "<br>";
+  s += status_row("LAN", lan);
   // WIFI
-  s += "<b>WIFI:</b> ";
+  String wifi;
   if (!wifi_present) {
-    s += "not available (board without WiFi)";
+    wifi = dot(false) + "not available";
   } else if (config_portal_active) {
-    s += "configuration access point " + html_escape(ap_name + "_" + chip_id) + ", " + WiFi.softAPIP().toString();
+    wifi = dot(true) + "setup access point " + html_escape(ap_name + "_" + chip_id);
   } else if (wifi_ssid.length() == 0) {
-    s += "not configured";
+    wifi = dot(false) + "not configured";
   } else if (wifi_connected()) {
-    s += "connected to " + html_escape(wifi_ssid) + ", " + WiFi.localIP().toString() + ", " + String(WiFi.RSSI()) + " dBm";
+    wifi = dot(true) + html_escape(wifi_ssid) + ", " + WiFi.localIP().toString() + " (" + String(WiFi.RSSI()) + " dBm)";
   } else {
-    s += "connecting to " + html_escape(wifi_ssid);
+    wifi = dot(false) + "connecting to " + html_escape(wifi_ssid);
   }
-  s += "<br><b>HOSTNAME:</b> " + hostname + ".local</p>";
+  s += status_row("WiFi", wifi);
+  s += status_row("Hostname", hostname + ".local");
+  s += status_row("Hardware", hardware_label());
+
+  // WIFI CREDENTIALS, ONLY ON BOARDS WITH WIFI CHIP
+  if (wifi_present) {
+    s += "<form class='mt' action='/save' method='POST'>"
+         "<div class='field'><label for='ssid'>WiFi name</label><input id='ssid' name='wifi_ssid' value='" + html_escape(wifi_ssid) + "' autocomplete='off' autocapitalize='none'></div>"
+         "<div class='field'><label for='pass'>WiFi password</label><input id='pass' type='password' name='wifi_pass' placeholder='" + String(wifi_pass.length() ? "unchanged" : "") + "'></div>"
+         "<div class='two'><button class='primary'>Save and reboot</button>"
+         "<button class='danger' name='wifi_forget' value='1' formnovalidate onclick=\"return confirm('Delete the WiFi settings and use LAN only?')\">Forget WiFi</button></div>"
+         "</form>";
+  }
+  s += "</section>";
   return s;
 }
 
 void handleRoot() {
-  String control_forms = "<hr><h2>DEVICE INFO</h2><h3>" + hostname + "<br><br>" + BOARD_INFO + "</h3><br>";
+  String page = FPSTR(PAGE_HEAD);
+  page += html_escape(hostname) + "</small></div></div>";
+  page += String("<span class='pill") + (has_network() ? "'>" : " off'>") + active_connection() + "</span></header>";
 
-  control_forms += "<hr><h2>CURRENT NTP TIME</h2><h1>" + String(rtc_hours) + ":" + String(rtc_mins) + ":" + String(rtc_secs) + " " + String(rtc_day) + "." + String(rtc_month) + "." + String(rtc_year) + "</h1>";
-  control_forms += "<p>last sync: " + time_last + "</p>";
-
-  control_forms += network_status();
-
-  // WIFI CREDENTIALS, ONLY ON BOARDS WITH WIFI CHIP
-  if (wifi_present) {
-    control_forms += "<br><h3> WIFI SETTINGS </h3>"
-                     "<form name='wifi' action='/save' method='POST'>"
-                     "<input type='text' value='" + html_escape(wifi_ssid) + "' name='wifi_ssid' placeholder='SSID'/><br>"
-                     "<input type='password' value='' name='wifi_pass' placeholder='"
-                     + String(wifi_pass.length() ? "(unchanged)" : "PASSWORD") + "'/><br>"
-                     "<input type='submit' value='SAVE WIFI AND REBOOT'/>"
-                     "</form><br>"
-                     "<form name='wifi_forget' action='/save' method='POST'>"
-                     "<input type='hidden' value='1' name='wifi_forget' />"
-                     "<input type='submit' value='DELETE WIFI (LAN ONLY)'/>"
-                     "</form><br>";
+  // TIME
+  const String utc_offset = "UTC" + String(timezone >= 0 ? "+" : "") + String(timezone);
+  page += "<section class='card'><h2>Time</h2>";
+  if (ntp_time_set) {
+    const uint64_t local_us = get_local_us();
+    const struct tm now_tm = get_local_tm(local_us);
+    const struct tm sync_tm = get_local_tm(ntp_utc_us + (int64_t)timezone * 3600LL * 1000000LL);
+    page += "<div class='time' id='clk'>" + format_time(now_tm) + "</div>";
+    page += "<div class='sub'>" + format_date(now_tm) + " &middot; " + utc_offset + " standard time</div>";
+    page += "<div class='sub'>Last sync " + format_time(sync_tm) + " from " + html_escape(ntp_server_ip) + ", " + String(ntp_delay_ms) + " ms delay</div>";
+    // LET THE CLOCK TICK IN THE BROWSER
+    page += "<script>(function(){var s=" + String((uint32_t)((local_us / 1000ULL) % 86400000ULL)) + ",t=Date.now(),e=document.getElementById('clk');"
+            "function p(n){return(n<10?'0':'')+n}"
+            "setInterval(function(){var m=(s+Date.now()-t)%86400000;e.textContent=p(Math.floor(m/3600000))+':'+p(Math.floor(m/60000)%60)+':'+p(Math.floor(m/1000)%60)},250)})()</script>";
+  } else {
+    page += "<div class='time'>--:--:--</div><div class='sub'>Not synced yet</div>";
   }
+  page += "<form class='mt' action='/save'><button class='primary' name='sendtime' value='1'>Send time to clock</button></form></section>";
 
-  control_forms += "<br><h3> CLOCK CONTROLS </h3>"
-                   "<form name='btn_off' action='/save' method='GET'>"
-                   "<input type='number' value='" + String(timezone) + "' name='timezone' min='-12' max='12' required placeholder='1'/>"
-                   "<input type='submit' value='SET TIMEZONE'/>"
-                   "</form><br>"
-                   "<form name='btn_off' action='/save' method='GET'>"
-                   "<input type='text' value='" + html_escape(ntp_server_url) + "' name='ntp_server_url' required placeholder='pool.ntp.org'/>"
-                   "<input type='submit' value='SET NTP SERVER URL'/>"
-                   "</form><br>"
-                   "<form name='btn_on' action='/save' method='GET' >"
-                   "<input type='hidden' value='sendtime' name='sendtime' />"
-                   "<input type='submit' value='SEND NTP TIME TO CLOCK'/>"
-                   "</form><br>";
-  // DAYLIGHTSAVING
-  control_forms += "<p>DAYLIGHTSAVING: </p><form name='btn_on' action='/save' method='GET'><select name='dls' id='dls'><option value='0'>DISABLED</option><option value='1'>ENABLED</option></select><input type='submit' value='SAVE'/></form><br>";
-  //BRIGHTNESS
-  control_forms += "<p>BRIGHTNESS-MODE<br> </p><br>";
-  control_forms += "<form name='btn_off' action='/save' method='GET'><input type='hidden' name='sb' id='sb' value='0'/><input type='submit' value='OFF'/></form><br>";
-  control_forms += "<form name='btn_off' action='/save' method='GET'><input type='hidden' name='sb' id='sb' value='1'/><input type='submit' value='10%'/></form><br>";
-  control_forms += "<form name='btn_off' action='/save' method='GET'><input type='hidden' name='sb' id='sb' value='2'/><input type='submit' value='20%'/></form><br>";
-  control_forms += "<form name='btn_off' action='/save' method='GET'><input type='hidden' name='sb' id='sb' value='3'/><input type='submit' value='50%'/></form><br>";
-  control_forms += "<form name='btn_off' action='/save' method='GET'><input type='hidden' name='sb' id='sb' value='4'/><input type='submit' value='70%'/></form><br>";
-  control_forms += "<form name='btn_off' action='/save' method='GET'><input type='hidden' name='sb' id='sb' value='5'/><input type='submit' value='100%'/></form><br>";
-  control_forms += "<form name='btn_off' action='/save' method='GET'><input type='hidden' name='sb' id='sb' value='6'/><input type='submit' value='AUTO'/></form><br>";
+  // LIGHT
+  page += "<section class='card'><h2>Light</h2><form action='/save'><div class='grid'>"
+          "<button name='sb' value='0'>Off</button>"
+          "<button name='sb' value='1'>10%</button>"
+          "<button name='sb' value='2'>20%</button>"
+          "<button name='sb' value='3'>50%</button>"
+          "<button name='sb' value='4'>70%</button>"
+          "<button name='sb' value='5'>100%</button>"
+          "<button class='wide' name='sb' value='6'>Auto (20:00 to 24:00)</button>"
+          "</div></form></section>";
 
-  // SYSTEM SETTINGS
-  control_forms += "<form name='btn_on' action='/save' method='GET' required ><input type='hidden' value='eepromread' name='eepromread' /><input type='submit' value='READ STORED CONFIG'/></form><br>";
-  control_forms += "<form name='btn_on' action='/save' method='GET' required ><input type='hidden' value='fsformat' name='fsformat' /><input type='submit' value='DELETE CONFIGURATION'/></form><br>";
-  control_forms += "<form name='btn_on' action='/save' method='GET' required ><input type='hidden' value='factreset' name='factreset' /><input type='submit' value='FACTORY RESET'/></form><br>";
-  control_forms += "<form name='btn_on' action='/save' method='GET' required ><input type='hidden' value='1' name='reboot' /><input type='submit' value='REBOOT NETWORK MODULE'/></form><br>";
+  // CLOCK SETTINGS
+  page += "<section class='card'><h2>Clock</h2><form action='/save'>"
+          "<div class='two'><div class='field'><label for='tz'>Timezone (UTC offset)</label><input id='tz' type='number' name='timezone' min='-12' max='12' value='" + String(timezone) + "' required></div>"
+          "<div class='field'><label for='ntp'>NTP server</label><input id='ntp' name='ntp_server_url' value='" + html_escape(ntp_server_url) + "' autocapitalize='none' required></div></div>"
+          "<button class='primary'>Save</button></form>"
+          "<label class='mt'>Daylight saving (EU summer time)</label>"
+          "<form action='/save' class='two'><button name='dls' value='1'>On</button><button name='dls' value='0'>Off</button></form></section>";
 
+  page += network_status();
 
-  control_forms += "<br><hr><h3>LAST SYSTEM MESSAGE</h3><br>" + html_escape(last_error);
+  // SYSTEM
+  page += "<section class='card'><h2>System</h2>";
+  page += status_row("Firmware", String(VERSION) + " &middot; " + hardware_label());
+  page += status_row("Last message", "<span class='msg'>" + html_escape(last_error) + "</span>");
+  page += "<div class='two mt'><a class='btn' href='/update'>Update</a>"
+          "<form action='/save'><button name='reboot' value='1'>Reboot</button></form></div>"
+          "<div class='two mt'><form action='/save' onsubmit=\"return confirm('Delete all settings of the network module?')\"><button class='danger' name='fsformat' value='1'>Delete settings</button></form>"
+          "<form action='/save' onsubmit=\"return confirm('Reset the network module and the clock to factory defaults?')\"><button class='danger' name='factreset' value='1'>Factory reset</button></form></div>"
+          "</section>";
 
-  server.send(200, "text/html", phead_1 + WEBSITE_TITLE + phead_2 + pstart + control_forms + pend);
+  page += "<footer>DBClock network module " + String(VERSION) + "</footer>";
+  page += FPSTR(PAGE_END);
+  server.send(200, "text/html", page);
 }
 
 void handleNotFound() {
@@ -690,37 +692,112 @@ void setup(void) {
   });
   ArduinoOTA.begin();
   //SETUP  NTP CLIENT
-  apply_ntp_settings();
-  timeClient.begin();
+  ntpUDP.begin(NTP_LOCAL_PORT);
   // REBOOT IF SOMETHING HANGS
   rp2040.wdt_begin(WATCHDOG_TIMEOUT);
 }
 
 
 
+uint32_t read_u32(const uint8_t* _b) {
+  return ((uint32_t)_b[0] << 24) | ((uint32_t)_b[1] << 16) | ((uint32_t)_b[2] << 8) | _b[3];
+}
+
+// NTP TIMESTAMP (s SINCE 1900 + 32 BIT FRACTION) => UNIX us, ERA 1 STARTS IN 2036
+uint64_t ntp_to_unix_us(const uint8_t* _b) {
+  const uint32_t secs = read_u32(_b);
+  const uint32_t frac = read_u32(_b + 4);
+  const uint64_t unix_secs = (uint64_t)secs + ((secs & 0x80000000UL) ? 0 : 0x100000000ULL) - NTP_UNIX_OFFSET;
+  return unix_secs * 1000000ULL + (((uint64_t)frac * 1000000ULL) >> 32);
+}
+
+// SNTP REQUEST WITH MICROSECOND RESOLUTION, NTPClient ONLY PROVIDES FULL SECONDS
+bool ntp_request() {
+  IPAddress server_ip;
+  if (!hostByName(ntp_server_url.c_str(), server_ip)) {
+    last_error = "ntp server could not be resolved: " + ntp_server_url;
+    return false;
+  }
+  ntp_server_ip = server_ip.toString();
+
+  uint8_t pkt[48] = { 0 };
+  pkt[0] = 0x23;  // LI 0, VERSION 4, MODE 3 = CLIENT
+  // DROP OLD ANSWERS
+  while (ntpUDP.parsePacket() > 0) {
+    ntpUDP.flush();
+  }
+  const uint64_t t1 = time_us_64();
+  ntpUDP.beginPacket(server_ip, 123);
+  ntpUDP.write(pkt, sizeof(pkt));
+  ntpUDP.endPacket();
+
+  while ((time_us_64() - t1) < (1000ULL * NTP_TIMEOUT)) {
+    if (ntpUDP.parsePacket() >= (int)sizeof(pkt)) {
+      const uint64_t t4 = time_us_64();
+      ntpUDP.read(pkt, sizeof(pkt));
+      // MODE 4 = SERVER, STRATUM 0 = KISS OF DEATH
+      if ((pkt[0] & 0x07) != 4 || pkt[1] == 0) {
+        last_error = "invalid ntp answer from " + ntp_server_ip;
+        return false;
+      }
+      const uint64_t t2 = ntp_to_unix_us(pkt + 32);  // SERVER RECEIVE
+      const uint64_t t3 = ntp_to_unix_us(pkt + 40);  // SERVER TRANSMIT
+      // ROUND TRIP WITHOUT THE PROCESSING TIME OF THE SERVER, HALF OF IT IS THE WAY BACK
+      const int64_t delay_us = (int64_t)(t4 - t1) - (int64_t)(t3 - t2);
+      ntp_utc_us = t3 + (delay_us > 0 ? delay_us / 2 : 0);
+      ntp_sync_us = t4;
+      ntp_delay_ms = delay_us / 1000;
+      ntp_time_set = true;
+      return true;
+    }
+    delay(1);
+  }
+  last_error = "ntp timeout: " + ntp_server_url + " (" + ntp_server_ip + ")";
+  return false;
+}
+
+// LOCAL STANDARD TIME IN us, THE MEGA ADDS THE DAYLIGHT SAVING HOUR
+uint64_t get_local_us() {
+  return ntp_utc_us + (time_us_64() - ntp_sync_us) + (int64_t)timezone * 3600LL * 1000000LL;
+}
+
+struct tm get_local_tm(const uint64_t _local_us) {
+  const time_t t = _local_us / 1000000ULL;
+  struct tm tm_local;
+  gmtime_r(&t, &tm_local);
+  return tm_local;
+}
+
+// THE TIME FRAME IS SENT RIGHT BEFORE A FULL SECOND, SO ITS LAST BYTE ARRIVES AT THE MEGA EXACTLY AT THAT SECOND
 bool sync_clock_from_ntp() {
   if (!has_network()) {
     last_error = "ntp sync skipped, no network";
     return false;
   }
-  if (!timeClient.forceUpdate() && !timeClient.isTimeSet()) {
-    last_error = "ntp sync failed: " + ntp_server_url;
+  if (!ntp_request()) {
     return false;
   }
-  time_last = timeClient.getFormattedTime();
-  rtc_hours = timeClient.getHours();
-  rtc_mins = timeClient.getMinutes();
-  rtc_secs = timeClient.getSeconds();
-  // SEND TIME
-  set_clock_time(rtc_hours, rtc_mins, rtc_secs);
-  // DATE
-  time_t epochTime = timeClient.getEpochTime();
-  struct tm* ptm = gmtime((time_t*)&epochTime);
-
-  rtc_day = ptm->tm_mday;
-  rtc_month = ptm->tm_mon + 1;
-  rtc_year = ptm->tm_year + 1900;
-  set_clock_date(rtc_day, rtc_month, rtc_year);
+  CLOCK_SERIAL.flush();
+  uint64_t target_us = (get_local_us() / 1000000ULL + 1) * 1000000ULL;
+  String frame = build_cmd_frame("st", format_time(get_local_tm(target_us)));
+  // 10 BITS PER BYTE (8N1)
+  const uint64_t frame_us = (uint64_t)frame.length() * 10ULL * 1000000ULL / SERIAL_BAUD_RATE;
+  if (target_us - get_local_us() < frame_us + 2000) {
+    target_us += 1000000ULL;
+    frame = build_cmd_frame("st", format_time(get_local_tm(target_us)));
+  }
+  const uint64_t send_at_us = target_us - frame_us;
+  while (get_local_us() + 2000 < send_at_us) {
+    delay(1);
+  }
+  while (get_local_us() < send_at_us) {
+    tight_loop_contents();
+  }
+  CLOCK_SERIAL.print(frame);
+  CLOCK_SERIAL.flush();
+  DEBUG_SERIAL.print(frame);
+  send_cmd_str("sd", format_date(get_local_tm(target_us)));
+  last_error = "time sent to clock, ntp server " + ntp_server_ip + ", delay " + String(ntp_delay_ms) + " ms";
   return true;
 }
 

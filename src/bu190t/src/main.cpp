@@ -2,7 +2,7 @@
 #define EEPROM_INDEX_LED_MODE 0
 #define EEPROM_INDEX_DLS 1
 #define RTC_TIMEZONE 1 //0=UTC ,1=MEZ, RTC RUNS ON STANDARD TIME, MUST MATCH THE TIMEZONE OF THE NETWORK MODULE
-#define VERSION "2.1.0"
+#define VERSION "2.2.0"
 #define WIFIEXTENTION_SERIAL Serial3 // TO ESP8266
 #define CLOCK_SERIAL Serial2
 #define DEBUG_SERIAL Serial //USB
@@ -34,10 +34,11 @@ int clock_sec = 0;
 
 const uint8_t PIN_BUTTON_BRGHT = 2;
 const uint8_t PIN_LED_PWM = 8;
-const long CLOCK_UPDATE_INTERAL = 1000;
+const long CLOCK_UPDATE_INTERAL = 1000; // FALLBACK IF THE RTC DOES NOT TICK
 
 
-unsigned long previousMillis = 0;
+unsigned long last_clock_update = 0;
+int last_rtc_second = -1;
 uint8_t current_led_level = 0; // PERCEIVED BRIGHTNESS to fade from 0-255
 uint8_t target_led_level = 0;
 unsigned long last_led_fade = 0;
@@ -46,6 +47,7 @@ bool last_brght_button_state = false;
 
 String readString;
 bool cmd_started = false;
+bool cmd_complete = false;
 #define CMD_START_CHARACTER '%'
 #define CMD_SEPERATION_CHARACTER '_'
 //EEPROM MANAGED VARIABLES
@@ -289,12 +291,14 @@ void loop() {
   }
 
 
-  // SEND TIME TO CLOCK EVERY 1s
+  // SEND THE TIME TO THE CLOCK DRIVES WHEN THE RTC SECOND CHANGES, SO THE DRIVES RUN IN SYNC WITH THE RTC
+  // THE RTC IS READ IN EVERY LOOP (~10ms), FALLBACK EVERY 1s IF IT DOES NOT TICK
   const unsigned long currentMillis = millis();
-  if (currentMillis - previousMillis >= CLOCK_UPDATE_INTERAL) {
-    previousMillis = currentMillis;
+  const DateTime now = rtc.now();
+  if (now.second() != last_rtc_second || (currentMillis - last_clock_update) >= CLOCK_UPDATE_INTERAL) {
+    last_rtc_second = now.second();
+    last_clock_update = currentMillis;
     DEBUG_SERIAL.println(".");
-      DateTime now = rtc.now();
       int h = now.hour();
       // RTC RUNS ON STANDARD TIME, ADD ONE HOUR DURING SUMMER TIME
       if (daylightsaving_enabled > 0 && summertime_eu(now.year(), now.month(), now.day(), h))
@@ -327,29 +331,35 @@ void loop() {
   }
 
 
-    while (WIFIEXTENTION_SERIAL.available()) {
-      delay(30); //delay to allow buffer to fill
-      if (WIFIEXTENTION_SERIAL.available() > 0) {
-        const char c = WIFIEXTENTION_SERIAL.read(); //gets one byte from serial buffer  
-        
-        if (c == '\n') {
-          WIFIEXTENTION_SERIAL.flush();
-          cmd_started = false;
+    // READ WITHOUT DELAY, A COMMAND IS ONLY PROCESSED AFTER THE COMPLETE LINE WAS RECEIVED
+    // SO THE TIME IS SET RIGHT WHEN THE LAST BYTE ARRIVES
+    while (WIFIEXTENTION_SERIAL.available() > 0 && !cmd_complete) {
+      const char c = WIFIEXTENTION_SERIAL.read();
+      if (c == '\n') {
+        if (cmd_started) {
           readString += CMD_SEPERATION_CHARACTER;
-          break;
-        }else if(c == CMD_START_CHARACTER && !cmd_started){
-          cmd_started = true;
-          readString = "";
-        }else if(cmd_started){
-          readString += c; //makes the string readString
-        }         
+          cmd_complete = true;
+        }
+        cmd_started = false;
+      }else if(c == CMD_START_CHARACTER){
+        cmd_started = true;
+        readString = "";
+      }else if(cmd_started && c != '\r'){
+        readString += c;
       }
     }
 
-    if (readString.length() > 0) {
-      
+    if (cmd_complete) {
+      cmd_complete = false;
       const String cmd = getValue(readString, CMD_SEPERATION_CHARACTER, 0);
       const String cmd_value = getValue(readString, CMD_SEPERATION_CHARACTER, 1);
+      const String cmd_crc = getValue(getValue(readString, CMD_SEPERATION_CHARACTER, 2), CMD_SEPERATION_CHARACTER, 0);
+      // DROP CORRUPTED FRAMES
+      if (cmd_crc == "" || (uint16_t)cmd_crc.toInt() != crc16(cmd + cmd_value)) {
+        send_status("crcerr", cmd + "-" + cmd_value + "-");
+        readString = "";
+        return;
+      }
       //st
       //sd
       if(cmd == "sb" && cmd_value != ""){

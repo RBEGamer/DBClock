@@ -200,6 +200,12 @@ The HAT is stacked onto the Pico W and uses `SPI0`: `GP16` MISO, `GP17` CS, `GP1
 * Webinterface: `http://dbclock<id>.local` or the IP printed on the Pico W USB serial (115200 baud). The IP is also sent to the Mega as `%ip_` command.
 * Firmware updates: upload `.pio/build/rpipicow/firmware.bin` on `http://<ip>/update`, or use Arduino OTA.
 
+### TIME ACCURACY
+
+The Pico uses its own SNTP request with microsecond resolution and compensates the network delay.
+The time frame (`%st_hh:mm:ss_crc`) is sent right before a full second, so its last byte arrives at the Mega exactly at that second; measured: within a few ms of the NTP time (before: up to 1 s behind).
+The Mega sets the RTC as soon as the line is complete, checks the CRC of every frame and sends the time to the clock drives when the RTC second changes.
+
 
 
 ## LED
@@ -274,7 +280,7 @@ The following third party libraries are included unmodified in the `lib` folders
 |-----------------------------------------------------------------|------------|----------------------------------|--------------|--------------------|
 | [RTClib](https://github.com/adafruit/RTClib)                    | 2.1.0      | `bu190t`                         | MIT          | Adafruit           |
 | [Adafruit BusIO](https://github.com/adafruit/Adafruit_BusIO)    | 1.14.1     | `bu190t`                         | MIT          | Adafruit           |
-| [NTPClient](https://github.com/arduino-libraries/NTPClient)     | 3.2.1      | `wifiinterface`, `picowinterface` | MIT         | Fabrice Weinberg   |
+| [NTPClient](https://github.com/arduino-libraries/NTPClient)     | 3.2.1      | `wifiinterface`                  | MIT          | Fabrice Weinberg   |
 | [Time](https://github.com/PaulStoffregen/Time)                  | 1.6.1      | `wifiinterface`                  | LGPL-2.1     | Michael Margolis   |
 | [WiFiManager](https://github.com/tzapu/WiFiManager)             | 2.0.0-rc.1 | `wifiinterface`                  | MIT          | tzapu              |
 
