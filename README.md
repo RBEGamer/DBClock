@@ -195,10 +195,11 @@ The HAT is stacked onto the Pico W and uses `SPI0`: `GP16` MISO, `GP17` CS, `GP1
 ### USAGE
 
 * On boot, the module tries LAN (DHCP) first, then WiFi with the stored credentials.
-* If neither connects (e.g. no WiFi credentials stored yet) and the board has WiFi, an open access point `DBClockConfiguration_<id>` with a captive portal is started on `192.168.4.1`. Enter the WiFi credentials there; the module reboots and connects. If a LAN cable is plugged in, the access point is closed automatically. If nobody connects to the access point within 5 minutes, the module reboots and tries again.
+* If neither connects (e.g. no WiFi credentials stored yet) and the board has WiFi, an open access point `DBClockConfiguration_<id>` with a captive portal is started on `192.168.4.1`. Enter the WiFi credentials there; the module reboots and connects. If a LAN cable is plugged in, or the stored WiFi connects (it is retried every 30 s while the access point is open), the access point is closed automatically. If nobody connects to the access point within 5 minutes, the module reboots and tries again.
 * A board without WiFi keeps waiting for the LAN connection.
 * Leave the WiFi settings empty (or press `DELETE WIFI (LAN ONLY)`) to use LAN only.
-* Webinterface: `http://dbclock<id>.local` or the IP printed on the Pico W USB serial (115200 baud). The IP is also sent to the Mega as `%ip_` command.
+* If the WiFi connection gets lost, the module reconnects every 30 s.
+* Webinterface: `http://dbclock<id>.local` or the IP printed on the Pico W USB serial (115200 baud). The USB serial also shows a network status line every 30 s (`NET ... LAN:... WIFI:... MQTT:...`). The IP is also sent to the Mega as `%ip_` command.
 * Firmware updates: upload `.pio/build/rpipicow/firmware.bin` on `http://<ip>/update`, or use Arduino OTA.
 
 ### TIME ACCURACY

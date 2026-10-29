@@ -1,4 +1,4 @@
-#define VERSION "4.5.0"
+#define VERSION "4.6.0"
 // NETWORK INTERFACE FOR THE DBCLOCK
 // RASPBERRY PI PICO W (WIFI) + WIZNET ETHERNET HAT FOR PICO (W5100S, LAN)
 // REPLACES THE ESP8266 WIFI INTERFACE, SAME SERIAL PROTOCOL TO THE ARDUINO MEGA
@@ -20,6 +20,10 @@
 #include <pico/unique_id.h>
 #include <hardware/gpio.h>
 #include <PubSubClient.h>
+#include <lwip/netif.h>
+#if defined(PICO_CYW43_SUPPORTED)
+#include <pico/cyw43_arch.h>
+#endif
 
 // NETWORK MODE IS DETECTED AT BOOT:
 // PICO W + ETHERNET HAT  => LAN (+ WIFI IF CONFIGURED)
@@ -45,7 +49,9 @@
 #define DEFAULT_TIMEZONE 1
 #define ETH_CONNECT_TIMEOUT 10000                         // ms to wait for a dhcp lease on the lan port
 #define WIFI_CONNECT_TIMEOUT 20000                        // ms to wait for the wifi connection
-#define WIFI_RECONNECT_INTERVAL 30000                     // ms between reconnect attempts if the wifi got lost
+#define WIFI_RECONNECT_INTERVAL 30000                     // ms between reconnect attempts if the wifi got lost, also while the setup access point is open
+#define WIFI_JOIN_TIMEOUT 5000                            // ms, A JOIN BLOCKS UP TO THIS TIME, MUST STAY BELOW THE WATCHDOG TIMEOUT (CORE DEFAULT 15 s)
+#define STATUS_LOG_INTERVAL 30000                         // ms between network status lines on the usb serial
 #define CONFIG_PORTAL_TIMEOUT 300                         // s, reboot and retry if no network got configured
 #define WATCHDOG_TIMEOUT 8000                             // ms, max 8300
 #define MQTT_DEFAULT_PORT 1883
@@ -780,9 +786,18 @@ void handleSave() {
 
 
 // ALL WIFI CALLS MUST BE GUARDED, THEY HANG ON A PICO WITHOUT WIFI CHIP
-// IN AP MODE WiFi.status() ALSO REPORTS WL_CONNECTED, SO THE STATION IP IS CHECKED AS WELL
+// WiFi.status() ONLY CHECKS THE STATION IP, WHICH STAYS SET AFTER THE WIFI GOT LOST, AND REPORTS WL_CONNECTED IN AP MODE
+// SO THE LINK STATE OF THE CYW43 CHIP IS CHECKED AS WELL
+bool wifi_link_up() {
+#if defined(PICO_CYW43_SUPPORTED)
+  return wifi_present && cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA) == CYW43_LINK_JOIN;
+#else
+  return false;
+#endif
+}
+
 bool wifi_connected() {
-  return wifi_present && !config_portal_active && WiFi.status() == WL_CONNECTED && WiFi.localIP().isSet();
+  return wifi_present && wifi_link_up() && WiFi.localIP().isSet();
 }
 
 String hardware_label() {
@@ -837,7 +852,7 @@ String network_status() {
   if (!wifi_present) {
     wifi = dot(false) + "not available";
   } else if (config_portal_active) {
-    wifi = dot(true) + "setup access point " + html_escape(ap_name + "_" + chip_id);
+    wifi = dot(true) + "setup access point " + html_escape(ap_name + "_" + chip_id) + (wifi_ssid.length() ? ", still trying " + html_escape(wifi_ssid) : "");
   } else if (wifi_ssid.length() == 0) {
     wifi = dot(false) + "not configured";
   } else if (wifi_connected()) {
@@ -1071,6 +1086,26 @@ bool has_network() {
   return (eth_present && eth.connected()) || wifi_connected();
 }
 
+// THE CORE ONLY SETS THE DEFAULT ROUTE WHEN AN INTERFACE COMES UP AND THERE IS NONE YET
+// IF THE SETUP ACCESS POINT CAME UP FIRST, OR THE LAN LEASE GOT LOST, THE WIFI STATION NEVER GETS IT
+// WITHOUT DEFAULT ROUTE ONLY THE LOCAL SUBNET IS REACHABLE (DNS WORKS, NTP AND MQTT IN OTHER SUBNETS DO NOT)
+void ensure_default_route() {
+  if ((eth_present && eth.connected()) || !wifi_connected()) {
+    return;  // LAN HAS PRIORITY, THE ETHERNET DRIVER SETS ITSELF AS DEFAULT
+  }
+  const uint32_t ip = (uint32_t)WiFi.localIP();
+  struct netif* n;
+  NETIF_FOREACH(n) {
+    if (ip4_addr_get_u32(netif_ip4_addr(n)) == ip) {
+      if (netif_default != n) {
+        netif_set_default(n);
+        DEBUG_SERIAL.println("default route set to wifi");
+      }
+      return;
+    }
+  }
+}
+
 void display_ip() {
   const String ip = get_primary_ip();
   if (ip != reported_ip) {
@@ -1112,7 +1147,9 @@ bool setup_ethernet() {
   return true;
 }
 
+// BLOCKS UP TO WIFI_JOIN_TIMEOUT
 void wifi_connect() {
+  rp2040.wdt_reset();
   if (wifi_pass.length() > 0) {
     WiFi.beginNoBlock(wifi_ssid.c_str(), wifi_pass.c_str());
   } else {
@@ -1127,22 +1164,33 @@ bool setup_wifi() {
   }
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(hostname.c_str());
+  WiFi.setTimeout(WIFI_JOIN_TIMEOUT);
   wifi_connect();
   const unsigned long start = millis();
   while (!wifi_connected() && (millis() - start) < WIFI_CONNECT_TIMEOUT) {
+    rp2040.wdt_reset();
+    // THE CORE GIVES UP AFTER WIFI_JOIN_TIMEOUT, TRY AGAIN WITHIN THE CONNECT TIMEOUT
+    if ((millis() - wifi_last_reconnect) > 2 * WIFI_JOIN_TIMEOUT) {
+      wifi_connect();
+    }
     delay(250);
   }
   return wifi_connected();
 }
 
 // REPLACES THE WIFIMANAGER OF THE ESP8266 VERSION
+// WITH STORED WIFI CREDENTIALS THE STATION KEEPS RUNNING (AP+STA) AND IS RETRIED IN THE LOOP
 void start_config_portal() {
-  WiFi.disconnect();
-  WiFi.mode(WIFI_AP);
+  if (wifi_ssid.length() == 0) {
+    WiFi.disconnect();
+    WiFi.mode(WIFI_AP);
+  }
+  WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
   WiFi.softAP((ap_name + "_" + chip_id).c_str());
   // THE AP GETS ITS IP A BIT LATER, THE DNS SERVER NEEDS IT FOR THE CAPTIVE PORTAL
   const unsigned long start = millis();
   while (!WiFi.softAPIP().isSet() && (millis() - start) < 3000) {
+    rp2040.wdt_reset();
     delay(50);
   }
   dns_server.start(53, "*", WiFi.softAPIP());
@@ -1151,10 +1199,33 @@ void start_config_portal() {
   last_error = "no network, configuration access point started";
 }
 
+// softAPdisconnect() WOULD ALSO DROP THE STATION AFTER A RETRY, disconnectAP() ONLY STOPS THE ACCESS POINT
 void stop_config_portal() {
   dns_server.stop();
-  WiFi.softAPdisconnect(true);
+  WiFi.disconnectAP();
   config_portal_active = false;
+}
+
+void log_network_status() {
+  String line = "NET " + String(millis() / 1000) + "s LAN:";
+  line += eth_present ? (eth.connected() ? eth.localIP().toString() : String("no lease")) : String("none");
+  line += " WIFI:";
+  if (!wifi_present) {
+    line += "none";
+  } else if (wifi_ssid.length() == 0) {
+    line += "not configured";
+  } else if (wifi_connected()) {
+    line += WiFi.localIP().toString() + " " + String(WiFi.RSSI()) + "dBm";
+  } else {
+#if defined(PICO_CYW43_SUPPORTED)
+    line += "down (link " + String(cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA)) + ")";
+#endif
+  }
+  if (config_portal_active) {
+    line += " AP:on clients " + String(WiFi.softAPgetStationNum());
+  }
+  line += " MQTT:" + mqtt_state;
+  DEBUG_SERIAL.println(line);
 }
 
 
@@ -1194,7 +1265,9 @@ void setup(void) {
   DEBUG_SERIAL.println(BOARD_INFO);
   DEBUG_SERIAL.println("WIFI CHIP: " + String(wifi_present ? "found" : "not found"));
   DEBUG_SERIAL.println("W5100S: " + String(eth_present ? "found" : "not found"));
-  DEBUG_SERIAL.println("NETWORK MODE: " + network_mode());
+  DEBUG_SERIAL.println("NETWORK MODE: " + network_mode() + " (" + String(millis()) + " ms)");
+  // REBOOT IF THE WIFI SETUP HANGS, ALL WAITS BELOW RESET THE WATCHDOG
+  rp2040.wdt_begin(WATCHDOG_TIMEOUT);
   setup_wifi();
   // NO NETWORK AT ALL => OPEN THE CONFIGURATION ACCESS POINT, WITHOUT WIFI CHIP WAIT FOR THE LAN
   if (!has_network()) {
@@ -1205,6 +1278,7 @@ void setup(void) {
     }
   }
   DEBUG_SERIAL.println(last_error);
+  log_network_status();
   //DISPLAY IP ON THE CLOCK
   display_ip();
   // SETUP MDNS
@@ -1236,8 +1310,6 @@ void setup(void) {
   mqtt.setSocketTimeout(MQTT_TIMEOUT / 1000);
   mqtt.setBufferSize(1024);
   mqtt.setCallback(mqtt_callback);
-  // REBOOT IF SOMETHING HANGS
-  rp2040.wdt_begin(WATCHDOG_TIMEOUT);
 }
 
 
@@ -1378,6 +1450,11 @@ void loop(void) {
     if (eth_present && eth.connected()) {
       stop_config_portal();
       last_error = "LAN connected, configuration access point closed";
+    } else if (wifi_connected()) {
+      stop_config_portal();
+      last_error = "WiFi connected, configuration access point closed";
+    } else if (wifi_ssid.length() > 0 && (millis() - wifi_last_reconnect) > WIFI_RECONNECT_INTERVAL) {
+      wifi_connect();
     } else if ((millis() - config_portal_started) > (1000UL * CONFIG_PORTAL_TIMEOUT) && WiFi.softAPgetStationNum() == 0) {
       // NOBODY CONFIGURED THE MODULE, TRY AGAIN WITH THE STORED SETTINGS
       rp2040.reboot();
@@ -1385,6 +1462,12 @@ void loop(void) {
   } else if (wifi_present && wifi_ssid.length() > 0 && !wifi_connected() && (millis() - wifi_last_reconnect) > WIFI_RECONNECT_INTERVAL) {
     wifi_connect();
   }
+  static unsigned long last_status_log = 0;
+  if ((millis() - last_status_log) > STATUS_LOG_INTERVAL) {
+    last_status_log = millis();
+    log_network_status();
+  }
+  ensure_default_route();
   // SEND THE IP IF IT CHANGED, E.G. LAN CABLE PLUGGED IN LATER
   display_ip();
   //UPDATE NTP AND SEND IT TO THE CLOCK
