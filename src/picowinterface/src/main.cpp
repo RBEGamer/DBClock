@@ -1,4 +1,4 @@
-#define VERSION "4.4.0"
+#define VERSION "4.5.0"
 // NETWORK INTERFACE FOR THE DBCLOCK
 // RASPBERRY PI PICO W (WIFI) + WIZNET ETHERNET HAT FOR PICO (W5100S, LAN)
 // REPLACES THE ESP8266 WIFI INTERFACE, SAME SERIAL PROTOCOL TO THE ARDUINO MEGA
@@ -34,7 +34,11 @@
 #define SERIAL_BAUD_RATE 9600
 #define NTP_SEND_TIME_INTERVAL 60*60                      // sende zeit an uhr alle x sekunden
 #define NTP_RETRY_INTERVAL 30                             // retry after x seconds if the ntp sync failed
+#define NTP_SERVER_COUNT 3                                // PRIMARY + 2 FALLBACKS, TRIED IN THIS ORDER
 #define DEFAULT_NTP_SERVER "pool.ntp.org"
+#define DEFAULT_NTP_SERVER_2 "time.cloudflare.com"
+#define DEFAULT_NTP_SERVER_3 "ptbtime1.ptb.de"
+#define NTP_DNS_TIMEOUT 2000                              // ms per server, all servers together stay below the watchdog by resetting it in between
 #define NTP_LOCAL_PORT 2390
 #define NTP_TIMEOUT 1500                                  // ms to wait for the ntp answer
 #define NTP_UNIX_OFFSET 2208988800ULL                     // s BETWEEN 1900 AND 1970
@@ -79,7 +83,8 @@ String BOARD_INFO = "DBCLOCKNETMODULE_FW_" + String(VERSION);
 const String ap_name = "DBClockConfiguration";
 
 //FILES FOR STORiNG CONFIGURATION DATA
-const char* file_ntp_server = "/ntp_server.txt";
+const char* file_ntp_server[NTP_SERVER_COUNT] = { "/ntp_server.txt", "/ntp_server2.txt", "/ntp_server3.txt" };
+const char* default_ntp_server[NTP_SERVER_COUNT] = { DEFAULT_NTP_SERVER, DEFAULT_NTP_SERVER_2, DEFAULT_NTP_SERVER_3 };
 const char* file_timezone = "/timezone.txt";
 const char* file_wifi_ssid = "/wifi_ssid.txt";
 const char* file_wifi_pass = "/wifi_pass.txt";
@@ -92,7 +97,7 @@ const char* file_light_percent = "/light_percent.txt";
 //VARS
 
 int timezone = 0;
-String ntp_server_url = DEFAULT_NTP_SERVER;
+String ntp_server_url[NTP_SERVER_COUNT] = { DEFAULT_NTP_SERVER, DEFAULT_NTP_SERVER_2, DEFAULT_NTP_SERVER_3 };  // EMPTY = NOT USED, THE PRIMARY IS REQUIRED
 String wifi_ssid = "";
 String wifi_pass = "";
 String last_error = "";
@@ -105,6 +110,7 @@ uint64_t ntp_utc_us = 0;       // UTC AT ntp_sync_us
 uint64_t ntp_sync_us = 0;      // time_us_64() OF THE LAST SYNC
 int32_t ntp_delay_ms = 0;      // NETWORK ROUND TRIP OF THE LAST SYNC
 String ntp_server_ip = "";
+String ntp_server_name = "";   // SERVER OF THE LAST SYNC
 
 // NETWORK STATE
 bool wifi_present = false;
@@ -284,7 +290,9 @@ String read_file(const char* _file, String _default = "") {
 }
 
 void restore_eeprom_values() {
-  ntp_server_url = read_file(file_ntp_server, DEFAULT_NTP_SERVER);
+  for (uint8_t i = 0; i < NTP_SERVER_COUNT; i++) {
+    ntp_server_url[i] = read_file(file_ntp_server[i], default_ntp_server[i]);
+  }
   timezone = read_file(file_timezone, String(DEFAULT_TIMEZONE)).toInt();
   wifi_ssid = read_file(file_wifi_ssid, "");
   wifi_pass = read_file(file_wifi_pass, "");
@@ -308,7 +316,9 @@ bool write_file(const char* _file, String _content) {
 }
 
 void save_values_to_eeprom() {
-  write_file(file_ntp_server, ntp_server_url);
+  for (uint8_t i = 0; i < NTP_SERVER_COUNT; i++) {
+    write_file(file_ntp_server[i], ntp_server_url[i]);
+  }
   write_file(file_timezone, String(timezone));
   write_file(file_wifi_ssid, wifi_ssid);
   write_file(file_wifi_pass, wifi_pass);
@@ -321,7 +331,9 @@ void save_values_to_eeprom() {
 
 void write_deffault_to_eeprom() {
   timezone = DEFAULT_TIMEZONE;
-  ntp_server_url = DEFAULT_NTP_SERVER;
+  for (uint8_t i = 0; i < NTP_SERVER_COUNT; i++) {
+    ntp_server_url[i] = default_ntp_server[i];
+  }
   save_values_to_eeprom();
   restore_eeprom_values();
 
@@ -660,10 +672,16 @@ void handleSave() {
       ntp_force_update = true;
     } else if (server.argName(i) == "ntp_server_url") {
       if (server.arg(i) != "") {
-        ntp_server_url = server.arg(i);
-        last_error = "set ntp_server_url to " + ntp_server_url;
+        ntp_server_url[0] = server.arg(i);
+        ntp_server_url[0].trim();
+        last_error = "set ntp_server_url to " + ntp_server_url[0];
         ntp_force_update = true;
       }
+    } else if (server.argName(i) == "ntp_server_url2" || server.argName(i) == "ntp_server_url3") {
+      // EMPTY = NO FALLBACK
+      String& url = ntp_server_url[server.argName(i) == "ntp_server_url2" ? 1 : 2];
+      url = server.arg(i);
+      url.trim();
     } else if (server.argName(i) == "wifi_ssid") {
       wifi_ssid = server.arg(i);
       last_error = "set wifi ssid to " + wifi_ssid + ", rebooting";
@@ -858,7 +876,7 @@ void handleRoot() {
     const struct tm sync_tm = get_local_tm(ntp_utc_us + (int64_t)timezone * 3600LL * 1000000LL);
     page += "<div class='time' id='clk'>" + format_time(now_tm) + "</div>";
     page += "<div class='sub'>" + format_date(now_tm) + " &middot; " + utc_offset + " standard time</div>";
-    page += "<div class='sub'>Last sync " + format_time(sync_tm) + " from " + html_escape(ntp_server_ip) + ", " + String(ntp_delay_ms) + " ms delay</div>";
+    page += "<div class='sub'>Last sync " + format_time(sync_tm) + " from " + html_escape(ntp_server_name) + " (" + html_escape(ntp_server_ip) + "), " + String(ntp_delay_ms) + " ms delay</div>";
     // LET THE CLOCK TICK IN THE BROWSER
     page += "<script>(function(){var s=" + String((uint32_t)((local_us / 1000ULL) % 86400000ULL)) + ",t=Date.now(),e=document.getElementById('clk');"
             "function p(n){return(n<10?'0':'')+n}"
@@ -886,7 +904,9 @@ void handleRoot() {
   // CLOCK SETTINGS
   page += "<section class='card'><h2>Clock</h2><form action='/save'>"
           "<div class='two'><div class='field'><label for='tz'>Timezone (UTC offset)</label><input id='tz' type='number' name='timezone' min='-12' max='12' value='" + String(timezone) + "' required></div>"
-          "<div class='field'><label for='ntp'>NTP server</label><input id='ntp' name='ntp_server_url' value='" + html_escape(ntp_server_url) + "' autocapitalize='none' required></div></div>"
+          "<div class='field'><label for='ntp'>NTP server</label><input id='ntp' name='ntp_server_url' value='" + html_escape(ntp_server_url[0]) + "' autocapitalize='none' required></div></div>"
+          "<div class='two'><div class='field'><label for='ntp2'>Fallback NTP server 1</label><input id='ntp2' name='ntp_server_url2' value='" + html_escape(ntp_server_url[1]) + "' placeholder='empty = off' autocapitalize='none'></div>"
+          "<div class='field'><label for='ntp3'>Fallback NTP server 2</label><input id='ntp3' name='ntp_server_url3' value='" + html_escape(ntp_server_url[2]) + "' placeholder='empty = off' autocapitalize='none'></div></div>"
           "<button class='primary'>Save</button></form>"
           "<label class='mt'>Daylight saving (EU summer time)</label>"
           "<form action='/save' class='two'><button name='dls' value='1'>On</button><button name='dls' value='0'>Off</button></form></section>";
@@ -1006,7 +1026,7 @@ void handleApiStatus() {
   if (ntp_time_set) {
     const struct tm now_tm = get_local_tm(get_local_us());
     time_json = "\"synced\":true,\"time\":\"" + format_time(now_tm) + "\",\"date\":\"" + format_date(now_tm) + "\",\"utc_offset\":" + String(timezone) +
-                ",\"ntp_server\":\"" + json_escape(ntp_server_ip) + "\",\"ntp_delay_ms\":" + String(ntp_delay_ms);
+                ",\"ntp_host\":\"" + json_escape(ntp_server_name) + "\",\"ntp_server\":\"" + json_escape(ntp_server_ip) + "\",\"ntp_delay_ms\":" + String(ntp_delay_ms);
   }
   const String json = "{\"version\":\"" + String(VERSION) + "\",\"hostname\":\"" + hostname + "\",\"hardware\":\"" + hardware_label() + "\","
                       "\"connection\":\"" + active_connection() + "\",\"ip\":\"" + get_primary_ip() + "\","
@@ -1235,13 +1255,13 @@ uint64_t ntp_to_unix_us(const uint8_t* _b) {
 }
 
 // SNTP REQUEST WITH MICROSECOND RESOLUTION, NTPClient ONLY PROVIDES FULL SECONDS
-bool ntp_request() {
+bool ntp_request(const String _server) {
   IPAddress server_ip;
-  if (!hostByName(ntp_server_url.c_str(), server_ip)) {
-    last_error = "ntp server could not be resolved: " + ntp_server_url;
+  if (!server_ip.fromString(_server) && !hostByName(_server.c_str(), server_ip, NTP_DNS_TIMEOUT)) {
+    last_error = "ntp server could not be resolved: " + _server;
     return false;
   }
-  ntp_server_ip = server_ip.toString();
+  const String ip = server_ip.toString();
 
   uint8_t pkt[48] = { 0 };
   pkt[0] = 0x23;  // LI 0, VERSION 4, MODE 3 = CLIENT
@@ -1260,7 +1280,7 @@ bool ntp_request() {
       ntpUDP.read(pkt, sizeof(pkt));
       // MODE 4 = SERVER, STRATUM 0 = KISS OF DEATH
       if ((pkt[0] & 0x07) != 4 || pkt[1] == 0) {
-        last_error = "invalid ntp answer from " + ntp_server_ip;
+        last_error = "invalid ntp answer from " + _server + " (" + ip + ")";
         return false;
       }
       const uint64_t t2 = ntp_to_unix_us(pkt + 32);  // SERVER RECEIVE
@@ -1271,11 +1291,32 @@ bool ntp_request() {
       ntp_sync_us = t4;
       ntp_delay_ms = delay_us / 1000;
       ntp_time_set = true;
+      ntp_server_name = _server;
+      ntp_server_ip = ip;
       return true;
     }
     delay(1);
   }
-  last_error = "ntp timeout: " + ntp_server_url + " (" + ntp_server_ip + ")";
+  last_error = "ntp timeout: " + _server + " (" + ip + ")";
+  return false;
+}
+
+// TRY THE PRIMARY SERVER FIRST, THEN THE FALLBACKS
+bool ntp_request() {
+  String errors = "";
+  for (uint8_t i = 0; i < NTP_SERVER_COUNT; i++) {
+    if (ntp_server_url[i].length() == 0) {
+      continue;
+    }
+    rp2040.wdt_reset();
+    const bool ok = ntp_request(ntp_server_url[i]);
+    rp2040.wdt_reset();
+    if (ok) {
+      return true;
+    }
+    errors += (errors.length() ? ", " : "") + last_error;
+  }
+  last_error = errors.length() ? errors : "no ntp server set";
   return false;
 }
 
@@ -1320,7 +1361,7 @@ bool sync_clock_from_ntp() {
   CLOCK_SERIAL.flush();
   DEBUG_SERIAL.print(frame);
   send_cmd_str("sd", format_date(get_local_tm(target_us)));
-  last_error = "time sent to clock, ntp server " + ntp_server_ip + ", delay " + String(ntp_delay_ms) + " ms";
+  last_error = "time sent to clock, ntp server " + ntp_server_name + " (" + ntp_server_ip + "), delay " + String(ntp_delay_ms) + " ms";
   return true;
 }
 

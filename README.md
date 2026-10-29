@@ -204,6 +204,7 @@ The HAT is stacked onto the Pico W and uses `SPI0`: `GP16` MISO, `GP17` CS, `GP1
 ### TIME ACCURACY
 
 The Pico uses its own SNTP request with microsecond resolution and compensates the network delay.
+Up to 3 NTP servers can be set in the `Clock` section: the primary server and 2 fallbacks (default `pool.ntp.org`, `time.cloudflare.com`, `ptbtime1.ptb.de`). They are tried in this order until one answers; an empty fallback is skipped. The status shows which server was used.
 The time frame (`%st_hh:mm:ss_crc`) is sent right before a full second, so its last byte arrives at the Mega exactly at that second; measured: within a few ms of the NTP time (before: up to 1 s behind).
 The Mega sets the RTC as soon as the line is complete, checks the CRC of every frame and sends the time to the clock drives when the RTC second changes.
 
