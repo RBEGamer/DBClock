@@ -152,15 +152,30 @@ The firmware is located in `src/picowinterface` and uses the same serial protoco
 * [Raspberry Pi Pico W](https://www.raspberrypi.com/products/raspberry-pi-pico/)
 * [WIZnet Ethernet HAT for Pico](https://docs.wiznet.io/Product/Open-Source-Hardware/wiznet_ethernet_hat)
 
+The firmware detects the hardware at boot and selects the network mode:
+
+| BOARD                  | ETHERNET HAT  | NETWORK MODE                         |
+|------------------------|---------------|--------------------------------------|
+| Pico W / Pico 2 W      | connected     | LAN, WiFi too if credentials are set |
+| Pico W / Pico 2 W      | not connected | WiFi only                            |
+| Pico / Pico 2          | connected     | LAN only                             |
+
 ### BUILD
 
-The project uses the [arduino-pico](https://github.com/earlephilhower/arduino-pico) core via the PlatformIO platform `maxgerhardt/platform-raspberrypi`, with 1MB of the 2MB flash as filesystem; it stores the settings and is needed for OTA updates.
+The project uses the [arduino-pico](https://github.com/earlephilhower/arduino-pico) core via the PlatformIO platform `maxgerhardt/platform-raspberrypi`, with 1MB of the flash as filesystem; it stores the settings and is needed for OTA updates.
+
+| ENV         | BOARD                                                          |
+|-------------|----------------------------------------------------------------|
+| `rpipicow`  | Pico W and Pico (RP2040); the WiFi chip is detected at boot     |
+| `rpipico2w` | Pico 2 W (RP2350)                                              |
+| `rpipico2`  | Pico 2 (RP2350) without WiFi                                   |
 
 ```bash
-pio run -d src/picowinterface
+pio run -d src/picowinterface -e rpipicow -t upload
 ```
 
-For the first upload, hold `BOOTSEL` while plugging in the Pico W and copy `src/picowinterface/.pio/build/rpipicow/firmware.uf2` to the `RPI-RP2` drive.
+For the first upload, hold `BOOTSEL` while plugging in the Pico and copy `src/picowinterface/.pio/build/<env>/firmware.uf2` to the `RPI-RP2` (or `RP2350`) drive.
+The USB serial (115200 baud) prints the detected hardware and network mode on boot.
 
 ### WIRING
 
@@ -179,7 +194,8 @@ The HAT is stacked onto the Pico W and uses `SPI0`: `GP16` MISO, `GP17` CS, `GP1
 ### USAGE
 
 * On boot, the module tries LAN (DHCP) first, then WiFi with the stored credentials.
-* If neither connects, an open access point `DBClockConfiguration_<id>` with a captive portal is started. Enter the WiFi credentials there; the module reboots and connects. If a LAN cable is plugged in, the access point is closed automatically.
+* If neither connects (e.g. no WiFi credentials stored yet) and the board has WiFi, an open access point `DBClockConfiguration_<id>` with a captive portal is started on `192.168.4.1`. Enter the WiFi credentials there; the module reboots and connects. If a LAN cable is plugged in, the access point is closed automatically. If nobody connects to the access point within 5 minutes, the module reboots and tries again.
+* A board without WiFi keeps waiting for the LAN connection.
 * Leave the WiFi settings empty (or press `DELETE WIFI (LAN ONLY)`) to use LAN only.
 * Webinterface: `http://dbclock<id>.local` or the IP printed on the Pico W USB serial (115200 baud). The IP is also sent to the Mega as `%ip_` command.
 * Firmware updates: upload `.pio/build/rpipicow/firmware.bin` on `http://<ip>/update`, or use Arduino OTA.

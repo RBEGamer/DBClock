@@ -1,4 +1,4 @@
-#define VERSION "4.0.0"
+#define VERSION "4.1.0"
 // NETWORK INTERFACE FOR THE DBCLOCK
 // RASPBERRY PI PICO W (WIFI) + WIZNET ETHERNET HAT FOR PICO (W5100S, LAN)
 // REPLACES THE ESP8266 WIFI INTERFACE, SAME SERIAL PROTOCOL TO THE ARDUINO MEGA
@@ -20,9 +20,11 @@
 #include <time.h>
 #include <pico/unique_id.h>
 
-#if !defined(PICO_CYW43_SUPPORTED)
-#error "SELECT THE RASPBERRY PI PICO W BOARD"
-#endif
+// NETWORK MODE IS DETECTED AT BOOT:
+// PICO W + ETHERNET HAT  => LAN (+ WIFI IF CONFIGURED)
+// PICO W                 => WIFI ONLY
+// PICO + ETHERNET HAT    => LAN ONLY
+// THE PICO W BUILD ALSO RUNS ON A PICO WITHOUT WIFI, THE CORE DETECTS THE CYW43 CHIP AT BOOT
 
 
 // CONFIG -------------------------------------
@@ -64,7 +66,7 @@ unsigned long last = 0;
 unsigned long next_sync_in = 0;
 bool ntp_force_update = true;
 unsigned long reboot_requested = 0;
-const String BOARD_INFO = "DBCLOCKNETMODULE_FW_" + String(VERSION) + "_BOARD_" + "PICOW_W5100S";
+String BOARD_INFO = "DBCLOCKNETMODULE_FW_" + String(VERSION);
 
 const String ap_name = "DBClockConfiguration";
 
@@ -90,6 +92,7 @@ int rtc_month = 1;
 int rtc_year = 2020;
 
 // NETWORK STATE
+bool wifi_present = false;
 bool eth_present = false;
 bool config_portal_active = false;
 unsigned long config_portal_started = 0;
@@ -389,8 +392,25 @@ void handleSave() {
 
 
 
+// ALL WIFI CALLS MUST BE GUARDED, THEY HANG ON A PICO WITHOUT WIFI CHIP
+// IN AP MODE WiFi.status() ALSO REPORTS WL_CONNECTED, SO THE STATION IP IS CHECKED AS WELL
+bool wifi_connected() {
+  return wifi_present && !config_portal_active && WiFi.status() == WL_CONNECTED && WiFi.localIP().isSet();
+}
+
+String network_mode() {
+  if (eth_present && wifi_present) {
+    return "LAN+WIFI";
+  } else if (eth_present) {
+    return "LAN ONLY";
+  } else if (wifi_present) {
+    return "WIFI ONLY";
+  }
+  return "NO NETWORK HARDWARE";
+}
+
 String network_status() {
-  String s = "<hr><h2>NETWORK</h2><p>";
+  String s = "<hr><h2>NETWORK</h2><p><b>MODE:</b> " + network_mode() + "<br>";
   // LAN
   s += "<b>LAN (W5100S):</b> ";
   if (!eth_present) {
@@ -404,11 +424,13 @@ String network_status() {
   s += "<br>";
   // WIFI
   s += "<b>WIFI:</b> ";
-  if (config_portal_active) {
+  if (!wifi_present) {
+    s += "not available (board without WiFi)";
+  } else if (config_portal_active) {
     s += "configuration access point " + html_escape(ap_name + "_" + chip_id) + ", " + WiFi.softAPIP().toString();
   } else if (wifi_ssid.length() == 0) {
     s += "not configured";
-  } else if (WiFi.status() == WL_CONNECTED) {
+  } else if (wifi_connected()) {
     s += "connected to " + html_escape(wifi_ssid) + ", " + WiFi.localIP().toString() + ", " + String(WiFi.RSSI()) + " dBm";
   } else {
     s += "connecting to " + html_escape(wifi_ssid);
@@ -425,18 +447,20 @@ void handleRoot() {
 
   control_forms += network_status();
 
-  // WIFI CREDENTIALS
-  control_forms += "<br><h3> WIFI SETTINGS </h3>"
-                   "<form name='wifi' action='/save' method='POST'>"
-                   "<input type='text' value='" + html_escape(wifi_ssid) + "' name='wifi_ssid' placeholder='SSID'/><br>"
-                   "<input type='password' value='' name='wifi_pass' placeholder='"
-                   + String(wifi_pass.length() ? "(unchanged)" : "PASSWORD") + "'/><br>"
-                   "<input type='submit' value='SAVE WIFI AND REBOOT'/>"
-                   "</form><br>"
-                   "<form name='wifi_forget' action='/save' method='POST'>"
-                   "<input type='hidden' value='1' name='wifi_forget' />"
-                   "<input type='submit' value='DELETE WIFI (LAN ONLY)'/>"
-                   "</form><br>";
+  // WIFI CREDENTIALS, ONLY ON BOARDS WITH WIFI CHIP
+  if (wifi_present) {
+    control_forms += "<br><h3> WIFI SETTINGS </h3>"
+                     "<form name='wifi' action='/save' method='POST'>"
+                     "<input type='text' value='" + html_escape(wifi_ssid) + "' name='wifi_ssid' placeholder='SSID'/><br>"
+                     "<input type='password' value='' name='wifi_pass' placeholder='"
+                     + String(wifi_pass.length() ? "(unchanged)" : "PASSWORD") + "'/><br>"
+                     "<input type='submit' value='SAVE WIFI AND REBOOT'/>"
+                     "</form><br>"
+                     "<form name='wifi_forget' action='/save' method='POST'>"
+                     "<input type='hidden' value='1' name='wifi_forget' />"
+                     "<input type='submit' value='DELETE WIFI (LAN ONLY)'/>"
+                     "</form><br>";
+  }
 
   control_forms += "<br><h3> CLOCK CONTROLS </h3>"
                    "<form name='btn_off' action='/save' method='GET'>"
@@ -493,23 +517,25 @@ String get_primary_ip() {
   if (eth_present && eth.connected()) {
     return eth.localIP().toString();
   }
-  if (WiFi.status() == WL_CONNECTED) {
+  if (wifi_connected()) {
     return WiFi.localIP().toString();
   }
-  if (config_portal_active) {
+  // EMPTY UNTIL THE AP HAS ITS IP, OTHERWISE "(IP unset)" IS SENT TO THE CLOCK
+  if (config_portal_active && WiFi.softAPIP().isSet()) {
     return WiFi.softAPIP().toString();
   }
   return "";
 }
 
 bool has_network() {
-  return (eth_present && eth.connected()) || WiFi.status() == WL_CONNECTED;
+  return (eth_present && eth.connected()) || wifi_connected();
 }
 
 void display_ip() {
   const String ip = get_primary_ip();
   if (ip != reported_ip) {
     reported_ip = ip;
+    DEBUG_SERIAL.println("IP: " + (ip != "" ? ip : String("none")));
     if (ip != "") {
       send_cmd_str("ip", ip);
     }
@@ -556,17 +582,17 @@ void wifi_connect() {
 }
 
 bool setup_wifi() {
-  if (wifi_ssid.length() == 0) {
+  if (!wifi_present || wifi_ssid.length() == 0) {
     return false;
   }
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(hostname.c_str());
   wifi_connect();
   const unsigned long start = millis();
-  while (WiFi.status() != WL_CONNECTED && (millis() - start) < WIFI_CONNECT_TIMEOUT) {
+  while (!wifi_connected() && (millis() - start) < WIFI_CONNECT_TIMEOUT) {
     delay(250);
   }
-  return WiFi.status() == WL_CONNECTED;
+  return wifi_connected();
 }
 
 // REPLACES THE WIFIMANAGER OF THE ESP8266 VERSION
@@ -574,6 +600,11 @@ void start_config_portal() {
   WiFi.disconnect();
   WiFi.mode(WIFI_AP);
   WiFi.softAP((ap_name + "_" + chip_id).c_str());
+  // THE AP GETS ITS IP A BIT LATER, THE DNS SERVER NEEDS IT FOR THE CAPTIVE PORTAL
+  const unsigned long start = millis();
+  while (!WiFi.softAPIP().isSet() && (millis() - start) < 3000) {
+    delay(50);
+  }
   dns_server.start(53, "*", WiFi.softAPIP());
   config_portal_active = true;
   config_portal_started = millis();
@@ -590,6 +621,10 @@ void stop_config_portal() {
 
 void setup(void) {
   DEBUG_SERIAL.begin(115200);
+  // GIVE THE USB SERIAL SOME TIME SO THE BOOT LOG IS NOT LOST
+  while (!DEBUG_SERIAL && millis() < 3000) {
+    delay(10);
+  }
   CLOCK_SERIAL.setTX(CLOCK_SERIAL_TX_PIN);
   CLOCK_SERIAL.setRX(CLOCK_SERIAL_RX_PIN);
   CLOCK_SERIAL.begin(SERIAL_BAUD_RATE);
@@ -610,15 +645,24 @@ void setup(void) {
   }
   // LOAD SETTINGS
   restore_eeprom_values();
-  // NETWORK: LAN AND WIFI CAN BE USED AT THE SAME TIME
+  // NETWORK: DETECT THE HARDWARE, LAN AND WIFI CAN BE USED AT THE SAME TIME
+  wifi_present = rp2040.isPicoW();
   eth_present = setup_ethernet();
-  DEBUG_SERIAL.println(eth_present ? "W5100S found" : "W5100S not found");
+  BOARD_INFO += String("_BOARD_") + (wifi_present ? "PICOW" : "PICO") + (eth_present ? "_W5100S" : "");
+  DEBUG_SERIAL.println(BOARD_INFO);
+  DEBUG_SERIAL.println("WIFI CHIP: " + String(wifi_present ? "found" : "not found"));
+  DEBUG_SERIAL.println("W5100S: " + String(eth_present ? "found" : "not found"));
+  DEBUG_SERIAL.println("NETWORK MODE: " + network_mode());
   setup_wifi();
-  // NO NETWORK AT ALL => OPEN THE CONFIGURATION ACCESS POINT
+  // NO NETWORK AT ALL => OPEN THE CONFIGURATION ACCESS POINT, WITHOUT WIFI CHIP WAIT FOR THE LAN
   if (!has_network()) {
-    start_config_portal();
+    if (wifi_present) {
+      start_config_portal();
+    } else {
+      last_error = "no network, waiting for a LAN connection";
+    }
   }
-  DEBUG_SERIAL.println("IP: " + get_primary_ip());
+  DEBUG_SERIAL.println(last_error);
   //DISPLAY IP ON THE CLOCK
   display_ip();
   // SETUP MDNS
@@ -693,7 +737,7 @@ void loop(void) {
       // NOBODY CONFIGURED THE MODULE, TRY AGAIN WITH THE STORED SETTINGS
       rp2040.reboot();
     }
-  } else if (wifi_ssid.length() > 0 && WiFi.status() != WL_CONNECTED && (millis() - wifi_last_reconnect) > WIFI_RECONNECT_INTERVAL) {
+  } else if (wifi_present && wifi_ssid.length() > 0 && !wifi_connected() && (millis() - wifi_last_reconnect) > WIFI_RECONNECT_INTERVAL) {
     wifi_connect();
   }
   // SEND THE IP IF IT CHANGED, E.G. LAN CABLE PLUGGED IN LATER
