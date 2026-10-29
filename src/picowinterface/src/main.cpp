@@ -250,6 +250,10 @@ void set_restdefaults(){
 }
 // ONLY READ THE FIRST LINE UNTIL NEW LINE !!!!!
 String read_file(const char* _file, String _default = "") {
+  // NOT SAVED YET IS NO ERROR, USE THE DEFAULT
+  if (!LittleFS.exists(_file)) {
+    return _default;
+  }
   File f = LittleFS.open(_file, "r");
   String tmp = _default;
   if (!f) {
@@ -476,7 +480,7 @@ void handleRoot() {
                    "<input type='submit' value='SEND NTP TIME TO CLOCK'/>"
                    "</form><br>";
   // DAYLIGHTSAVING
-  control_forms += "<p>DAYLIGHTSAVING: </p><form name='btn_on' action='/save' method='GET'><select name='dls' id='dls'><option value='0'>DISBALED</option><option value='1'>ENABLED</option></select><input type='submit' value='SAVE'/></form><br>";
+  control_forms += "<p>DAYLIGHTSAVING: </p><form name='btn_on' action='/save' method='GET'><select name='dls' id='dls'><option value='0'>DISABLED</option><option value='1'>ENABLED</option></select><input type='submit' value='SAVE'/></form><br>";
   //BRIGHTNESS
   control_forms += "<p>BRIGHTNESS-MODE<br> </p><br>";
   control_forms += "<form name='btn_off' action='/save' method='GET'><input type='hidden' name='sb' id='sb' value='0'/><input type='submit' value='OFF'/></form><br>";
