@@ -215,18 +215,21 @@ With [MQTT discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-disc
 * `light`: on/off, brightness 1-100 %, effect `Auto` (the automatic light mode of the clock)
 * `button`: `Sync time`, sends the NTP time to the clock
 
-| TOPIC                                   | DIRECTION  | PAYLOAD                 |
-|-----------------------------------------|------------|-------------------------|
-| `dbclock/<id>/status`                   | clock → HA | `online` / `offline`    |
-| `dbclock/<id>/light/state`              | clock → HA | `ON` / `OFF`            |
-| `dbclock/<id>/light/brightness`         | clock → HA | `0`-`100`               |
-| `dbclock/<id>/light/effect`             | clock → HA | `Auto` / `None`         |
-| `dbclock/<id>/light/set`                | HA → clock | `ON` / `OFF`            |
-| `dbclock/<id>/light/brightness/set`     | HA → clock | `0`-`100`               |
-| `dbclock/<id>/light/effect/set`         | HA → clock | `Auto` / `None`         |
-| `dbclock/<id>/sync/set`                 | HA → clock | any                     |
+The discovery is sent after each connect and when Home Assistant comes online (`homeassistant/status`); `Send discovery` on the webinterface sends it again by hand.
 
-`<id>` is the end of the hostname, e.g. `46ae24` for `dbclock46ae24`.
+| TOPIC                           | DIRECTION  | PAYLOAD                 |
+|---------------------------------|------------|-------------------------|
+| `<base>/status`                 | clock → HA | `online` / `offline`    |
+| `<base>/light/state`            | clock → HA | `ON` / `OFF`            |
+| `<base>/light/brightness`       | clock → HA | `0`-`100`               |
+| `<base>/light/effect`           | clock → HA | `Auto` / `None`         |
+| `<base>/light/set`              | HA → clock | `ON` / `OFF`            |
+| `<base>/light/brightness/set`   | HA → clock | `0`-`100`               |
+| `<base>/light/effect/set`       | HA → clock | `Auto` / `None`         |
+| `<base>/sync/set`               | HA → clock | any                     |
+
+`<base>` is the `Base topic` from the webinterface, default `dbclock/<id>`. `<id>` is the end of the hostname, e.g. `46ae24` for `dbclock46ae24`.
+After a change of the base topic the clock removes its retained messages below the old topic and sends the discovery with the new topics, so Home Assistant keeps the same entities.
 If the broker is not reachable, the module retries with an increasing interval (15 s up to 5 min).
 
 ### REST API
@@ -237,7 +240,7 @@ If the broker is not reachable, the module retries with an increasing interval (
 | `GET` or `POST /api/light?state=on` / `off` / `toggle`      | `on` restores the last brightness                                               |
 | `GET` or `POST /api/light?brightness=0-100`                 | perceived brightness in %, `0` = off                                           |
 | `GET` or `POST /api/light?mode=auto`                        | modes: `off`, `10`, `20`, `50`, `70`, `100`, `auto`                            |
-| `GET /api/status`                                           | time, NTP, network, clock link, light and MQTT state                           |
+| `GET /api/status`                                           | time, NTP, network, clock link, light, MQTT state and base topic               |
 
 `confirmed` is `true` if the clock reported the state over the optional feedback line. Invalid values return HTTP `400` with an error message.
 

@@ -1,4 +1,4 @@
-#define VERSION "4.3.0"
+#define VERSION "4.4.0"
 // NETWORK INTERFACE FOR THE DBCLOCK
 // RASPBERRY PI PICO W (WIFI) + WIZNET ETHERNET HAT FOR PICO (W5100S, LAN)
 // REPLACES THE ESP8266 WIFI INTERFACE, SAME SERIAL PROTOCOL TO THE ARDUINO MEGA
@@ -87,6 +87,7 @@ const char* file_mqtt_host = "/mqtt_host.txt";
 const char* file_mqtt_port = "/mqtt_port.txt";
 const char* file_mqtt_user = "/mqtt_user.txt";
 const char* file_mqtt_pass = "/mqtt_pass.txt";
+const char* file_mqtt_topic = "/mqtt_topic.txt";
 const char* file_light_percent = "/light_percent.txt";
 //VARS
 
@@ -134,6 +135,8 @@ String mqtt_host = "";
 uint16_t mqtt_port = MQTT_DEFAULT_PORT;
 String mqtt_user = "";
 String mqtt_pass = "";
+String mqtt_topic = "";  // BASE TOPIC, EMPTY = dbclock/<id>
+String mqtt_old_base = "";  // RETAINED MESSAGES BELOW THIS TOPIC ARE REMOVED AFTER THE NEXT CONNECT
 String mqtt_state = "disabled";
 unsigned long mqtt_last_connect = 0;
 unsigned long mqtt_retry_interval = MQTT_RECONNECT_INTERVAL;
@@ -289,6 +292,7 @@ void restore_eeprom_values() {
   mqtt_port = read_file(file_mqtt_port, String(MQTT_DEFAULT_PORT)).toInt();
   mqtt_user = read_file(file_mqtt_user, "");
   mqtt_pass = read_file(file_mqtt_pass, "");
+  mqtt_topic = read_file(file_mqtt_topic, "");
   light_last_percent = constrain(read_file(file_light_percent, "100").toInt(), 1, 100);
 }
 
@@ -312,6 +316,7 @@ void save_values_to_eeprom() {
   write_file(file_mqtt_port, String(mqtt_port));
   write_file(file_mqtt_user, mqtt_user);
   write_file(file_mqtt_pass, mqtt_pass);
+  write_file(file_mqtt_topic, mqtt_topic);
 }
 
 void write_deffault_to_eeprom() {
@@ -493,7 +498,27 @@ void read_mega() {
 // THE CLOCK APPEARS IN HOME ASSISTANT AS DIMMABLE LIGHT WITH THE EFFECT "Auto" AND A "Sync time" BUTTON (MQTT DISCOVERY)
 
 String mqtt_base() {
-  return "dbclock/" + chip_id;
+  return mqtt_topic.length() ? mqtt_topic : "dbclock/" + chip_id;
+}
+
+// TRIM SPACES AND SLASHES
+String mqtt_clean_topic(String _topic) {
+  _topic.trim();
+  while (_topic.startsWith("/")) {
+    _topic.remove(0, 1);
+  }
+  while (_topic.endsWith("/")) {
+    _topic.remove(_topic.length() - 1);
+  }
+  return _topic;
+}
+
+// REMOVE THE RETAINED MESSAGES BELOW THE OLD BASE TOPIC
+void mqtt_clear_retained(const String _base) {
+  mqtt.publish((_base + "/status").c_str(), "", true);
+  mqtt.publish((_base + "/light/state").c_str(), "", true);
+  mqtt.publish((_base + "/light/brightness").c_str(), "", true);
+  mqtt.publish((_base + "/light/effect").c_str(), "", true);
 }
 
 String mqtt_device_json() {
@@ -605,6 +630,10 @@ void mqtt_loop() {
   }
   mqtt_retry_interval = MQTT_RECONNECT_INTERVAL;
   mqtt_state = "connected to " + broker.toString() + ":" + String(mqtt_port);
+  if (mqtt_old_base.length() && mqtt_old_base != b) {
+    mqtt_clear_retained(mqtt_old_base);
+  }
+  mqtt_old_base = "";
   mqtt.publish(will.c_str(), "online", true);
   mqtt.subscribe((b + "/light/set").c_str());
   mqtt.subscribe((b + "/light/+/set").c_str());
@@ -683,6 +712,27 @@ void handleSave() {
       mqtt_port = constrain(server.arg(i).toInt(), 1, 65535);
     } else if (server.argName(i) == "mqtt_user") {
       mqtt_user = server.arg(i);
+    } else if (server.argName(i) == "mqtt_topic") {
+      const String topic = mqtt_clean_topic(server.arg(i));
+      if (topic.indexOf('+') >= 0 || topic.indexOf('#') >= 0) {
+        last_error = "mqtt base topic must not contain + or #";
+      } else if (topic != mqtt_topic) {
+        if (mqtt_old_base.length() == 0) {
+          mqtt_old_base = mqtt_base();
+        }
+        mqtt_topic = topic;
+        last_error = "mqtt base topic set to " + mqtt_base();
+        mqtt_reconnect_now();  // RESUBSCRIBES AND SENDS THE DISCOVERY WITH THE NEW TOPICS
+      }
+    } else if (server.argName(i) == "mqtt_discovery") {
+      if (mqtt.connected()) {
+        mqtt_publish_discovery();
+        mqtt_publish_state();
+        last_error = "mqtt discovery sent";
+      } else {
+        last_error = "mqtt not connected, discovery not sent";
+      }
+      save = false;
     } else if (server.argName(i) == "mqtt_pass") {
       // EMPTY FIELD = KEEP THE STORED PASSWORD, UNLESS THE USER WAS REMOVED
       if (server.arg(i) != "" || server.arg("mqtt_user") == "") {
@@ -850,7 +900,9 @@ void handleRoot() {
           "<div class='field'><label for='mp'>Port</label><input id='mp' type='number' name='mqtt_port' min='1' max='65535' value='" + String(mqtt_port) + "'></div></div>"
           "<div class='two'><div class='field'><label for='mu'>User</label><input id='mu' name='mqtt_user' value='" + html_escape(mqtt_user) + "' autocomplete='off' autocapitalize='none'></div>"
           "<div class='field'><label for='mw'>Password</label><input id='mw' type='password' name='mqtt_pass' placeholder='" + String(mqtt_pass.length() ? "unchanged" : "") + "'></div></div>"
+          "<div class='field'><label for='mt'>Base topic</label><input id='mt' name='mqtt_topic' value='" + html_escape(mqtt_topic) + "' placeholder='dbclock/" + chip_id + "' autocapitalize='none'></div>"
           "<button class='primary'>Save</button></form>"
+          "<form class='mt' action='/save' method='POST'><button name='mqtt_discovery' value='1'" + String(mqtt.connected() ? "" : " disabled") + ">Send discovery</button></form>"
           "<div class='sub mt'>With MQTT discovery the clock appears as device DBClock with a dimmable light and a Sync time button.</div></section>";
 
   page += network_status();
@@ -961,7 +1013,7 @@ void handleApiStatus() {
                       "\"time\":{" + time_json + "},"
                       "\"clock_link\":{\"ok\":" + String(mega_link_ok() ? "true" : "false") + ",\"clock_time\":\"" + json_escape(mega_clock_time) + "\"},"
                       "\"light\":" + light_json() + ","
-                      "\"mqtt\":\"" + json_escape(mqtt_state) + "\"}";
+                      "\"mqtt\":\"" + json_escape(mqtt_state) + "\",\"mqtt_topic\":\"" + json_escape(mqtt_base()) + "\"}";
   send_json(200, json);
 }
 
