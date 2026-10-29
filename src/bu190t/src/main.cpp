@@ -1,8 +1,9 @@
 #define DS1307_CTRL_ID 0x68  //I2C ADDRESS OF DS3231 OR DS1307
 #define EEPROM_INDEX_LED_MODE 0
 #define EEPROM_INDEX_DLS 1
+#define EEPROM_INDEX_LED_PERCENT 2
 #define RTC_TIMEZONE 1 //0=UTC ,1=MEZ, RTC RUNS ON STANDARD TIME, MUST MATCH THE TIMEZONE OF THE NETWORK MODULE
-#define VERSION "2.2.0"
+#define VERSION "2.3.0"
 #define WIFIEXTENTION_SERIAL Serial3 // TO ESP8266
 #define CLOCK_SERIAL Serial2
 #define DEBUG_SERIAL Serial //USB
@@ -11,6 +12,9 @@
 #define LIGHTMODE_AUTO_MAX_LEVEL 167 // PERCEIVED BRIGHTNESS 0-255, 167 = SAME LIGHT AS THE OLD PWM 100
 #define LED_GAMMA 2.2 // EXPONENTIAL CURVE SO THE BRIGHTNESS STEPS AND FADES LOOK LINEAR
 #define LED_FADE_INTERVAL 8 // ms PER BRIGHTNESS STEP => ~2s FOR A FULL FADE
+#define LED_MODE_AUTO 6
+#define LED_MODE_MANUAL 7 // BRIGHTNESS SET WITH THE sl COMMAND, E.G. FROM HOME ASSISTANT
+#define LED_STATE_INTERVAL 30000 // ms, THE LIGHT STATE IS ALSO REPORTED PERIODICALLY
 
 #include <Arduino.h>
 #include <EEPROM.h>
@@ -22,6 +26,7 @@ void send_status(const String _command, const String _payload);
 void update_according_led_mode(const uint8_t _led_mode);
 uint8_t led_level_to_pwm(const uint8_t _level);
 uint8_t get_auto_led_level(const int _h, const int _m);
+void send_led_state();
 void send_time_to_clock(const int _h, const int _m, const int _s, bool _signal_ok = true);
 uint16_t crc16(const String _data, const uint16_t _poly = 0x8408);
 bool check_for_i2c_device(const uint8_t _addr);
@@ -42,6 +47,9 @@ int last_rtc_second = -1;
 uint8_t current_led_level = 0; // PERCEIVED BRIGHTNESS to fade from 0-255
 uint8_t target_led_level = 0;
 unsigned long last_led_fade = 0;
+unsigned long last_led_state = 0;
+uint8_t reported_led_mode = 0xFF;
+uint8_t reported_led_level = 0;
 bool last_brght_button_state = false;
 
 
@@ -52,6 +60,7 @@ bool cmd_complete = false;
 #define CMD_SEPERATION_CHARACTER '_'
 //EEPROM MANAGED VARIABLES
 uint8_t led_mode = 0;
+uint8_t manual_led_percent = 100;
 uint8_t daylightsaving_enabled = 0;
 
 
@@ -72,9 +81,13 @@ void setup() {
   //READ EEEPROM VALUES
   led_mode = EEPROM.read(EEPROM_INDEX_LED_MODE);
   daylightsaving_enabled = EEPROM.read(EEPROM_INDEX_DLS);
+  manual_led_percent = EEPROM.read(EEPROM_INDEX_LED_PERCENT);
   // EMPTY EEPROM READS 0xFF
-  if(led_mode > 6){
+  if(led_mode > LED_MODE_MANUAL){
     led_mode = 0;
+  }
+  if(manual_led_percent > 100){
+    manual_led_percent = 100;
   }
   if(daylightsaving_enabled > 1){
     daylightsaving_enabled = 1;
@@ -238,7 +251,7 @@ uint8_t get_auto_led_level(const int _h, const int _m){
 
 // LEVELS ARE PERCEIVED BRIGHTNESS, MATCHING THE 10% 20% 50% 70% 100% BUTTONS OF THE WEBINTERFACE
 void update_according_led_mode(const uint8_t _led_mode){
-    const uint8_t led_mode = _led_mode % 7;
+    const uint8_t led_mode = _led_mode % (LED_MODE_MANUAL + 1);
     if(led_mode == 0){
       target_led_level = 0;
     }else if(led_mode == 1){
@@ -251,11 +264,21 @@ void update_according_led_mode(const uint8_t _led_mode){
       target_led_level = 179;
     }else if(led_mode == 5){
       target_led_level = 255;
-     }else if(led_mode == 6){
+     }else if(led_mode == LED_MODE_AUTO){
        //AUTO, TARGET IS SET EVERY SECOND IN THE LOOP
        target_led_level = 0;
        current_led_level = 80;//INDICATE CLOCK IS IN AUTO
+    }else if(led_mode == LED_MODE_MANUAL){
+      target_led_level = (uint16_t)manual_led_percent * 255 / 100;
     }
+}
+
+// %ls_<MODE>,<PERCEIVED BRIGHTNESS 0-100>, READ BY THE NETWORK MODULE FOR HOME ASSISTANT
+void send_led_state(){
+  reported_led_mode = led_mode;
+  reported_led_level = target_led_level;
+  last_led_state = millis();
+  send_status("ls", String(led_mode) + "," + String(((uint16_t)target_led_level * 100 + 127) / 255));
 }
   
 
@@ -276,15 +299,15 @@ void loop() {
   if(digitalRead(PIN_BUTTON_BRGHT) == LOW && last_brght_button_state == true){
     last_brght_button_state = false;
     led_mode++;
-    if(led_mode > 6){
+    if(led_mode > LED_MODE_AUTO){
       led_mode = 0;
     }
     
     send_status("log", "LedMode" + String(led_mode));
     //SAVE LED MODE
-    EEPROM.write(EEPROM_INDEX_LED_MODE,led_mode);
+    EEPROM.update(EEPROM_INDEX_LED_MODE,led_mode);
     update_according_led_mode(led_mode);
-
+    send_led_state();
     
   }else if(digitalRead(PIN_BUTTON_BRGHT) == HIGH){
     last_brght_button_state = true;
@@ -309,13 +332,13 @@ void loop() {
       send_time_to_clock(h, now.minute(),now.second(), true);
 
       //ALSO HANDLE LED MODE AUTO
-      if(led_mode == 6){
+      if(led_mode == LED_MODE_AUTO){
         target_led_level = get_auto_led_level(h, now.minute());
       }
-    
 
-    if(target_led_level != current_led_level){
-      send_status("led", String(target_led_level));
+    // REPORT THE LIGHT STATE ON EVERY CHANGE AND PERIODICALLY
+    if(led_mode != reported_led_mode || target_led_level != reported_led_level || (currentMillis - last_led_state) >= LED_STATE_INTERVAL){
+      send_led_state();
     }
   }
   
@@ -364,11 +387,25 @@ void loop() {
       //sd
       if(cmd == "sb" && cmd_value != ""){
         const int tmp = cmd_value.toInt();
-        if(tmp >= 0 && tmp < 7){
+        if(tmp >= 0 && tmp <= LED_MODE_MANUAL){
             led_mode = tmp;
-            EEPROM.write(EEPROM_INDEX_LED_MODE,led_mode);
+            EEPROM.update(EEPROM_INDEX_LED_MODE,led_mode);
             update_according_led_mode(led_mode);
-            DEBUG_SERIAL.println(led_mode);
+            send_led_state();
+        }
+      }else if(cmd == "sl" && cmd_value != ""){ //SET LIGHT BRIGHTNESS 0-100%
+        const int tmp = cmd_value.toInt();
+        if(tmp >= 0 && tmp <= 100){
+          if(tmp == 0){
+            led_mode = 0;
+          }else{
+            manual_led_percent = tmp;
+            led_mode = LED_MODE_MANUAL;
+            EEPROM.update(EEPROM_INDEX_LED_PERCENT, manual_led_percent);
+          }
+          EEPROM.update(EEPROM_INDEX_LED_MODE, led_mode);
+          update_according_led_mode(led_mode);
+          send_led_state();
         }
       }else if(cmd == "dls" && cmd_value != ""){
         const int dlsi = cmd_value.toInt();

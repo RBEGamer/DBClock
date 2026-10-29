@@ -185,9 +185,10 @@ The HAT is stacked onto the Pico W and uses `SPI0`: `GP16` MISO, `GP17` CS, `GP1
 |------------------|---------------|-------------------------------------------------------|
 | GP0 (UART0 TX)   | RX3 (pin 15)  | 3.3V signal, the Mega reads it fine                   |
 | GND              | GND           |                                                       |
+| GP1 (UART0 RX)   | TX3 (pin 14)  | optional, light state feedback, only via voltage divider |
 | VSYS             | 5V            | or a separate 5V supply, see below                    |
 
-**NOTE** The Pico W is not 5V tolerant. Do not connect the Mega `TX3` to `GP1` without a level shifter; the firmware does not need it.
+**NOTE** The Pico W is not 5V tolerant. The optional feedback line from the Mega `TX3` (5V) to `GP1` needs a voltage divider: `TX3` - 1 kΩ - `GP1` - 2 kΩ - `GND`. Without it, the light state is not confirmed by the clock (e.g. after using the push button), everything else works.
 
 **NOTE** WiFi + W5100S draw up to ~200 mA. If the Mega is powered with 12V on `VIN`, its linear regulator gets hot; a small 12V to 5V buck converter for the Pico W is recommended.
 
@@ -205,6 +206,60 @@ The HAT is stacked onto the Pico W and uses `SPI0`: `GP16` MISO, `GP17` CS, `GP1
 The Pico uses its own SNTP request with microsecond resolution and compensates the network delay.
 The time frame (`%st_hh:mm:ss_crc`) is sent right before a full second, so its last byte arrives at the Mega exactly at that second; measured: within a few ms of the NTP time (before: up to 1 s behind).
 The Mega sets the RTC as soon as the line is complete, checks the CRC of every frame and sends the time to the clock drives when the RTC second changes.
+
+### HOME ASSISTANT
+
+Enter the MQTT broker of Home Assistant (e.g. the Mosquitto add-on) in the `Home Assistant` section of the webinterface.
+With [MQTT discovery](https://www.home-assistant.io/integrations/mqtt/#mqtt-discovery) (enabled by default) the clock appears as device `DBClock` with:
+
+* `light`: on/off, brightness 1-100 %, effect `Auto` (the automatic light mode of the clock)
+* `button`: `Sync time`, sends the NTP time to the clock
+
+| TOPIC                                   | DIRECTION  | PAYLOAD                 |
+|-----------------------------------------|------------|-------------------------|
+| `dbclock/<id>/status`                   | clock → HA | `online` / `offline`    |
+| `dbclock/<id>/light/state`              | clock → HA | `ON` / `OFF`            |
+| `dbclock/<id>/light/brightness`         | clock → HA | `0`-`100`               |
+| `dbclock/<id>/light/effect`             | clock → HA | `Auto` / `None`         |
+| `dbclock/<id>/light/set`                | HA → clock | `ON` / `OFF`            |
+| `dbclock/<id>/light/brightness/set`     | HA → clock | `0`-`100`               |
+| `dbclock/<id>/light/effect/set`         | HA → clock | `Auto` / `None`         |
+| `dbclock/<id>/sync/set`                 | HA → clock | any                     |
+
+`<id>` is the end of the hostname, e.g. `46ae24` for `dbclock46ae24`.
+If the broker is not reachable, the module retries with an increasing interval (15 s up to 5 min).
+
+### REST API
+
+| REQUEST                                                     | RESULT                                                                          |
+|-------------------------------------------------------------|---------------------------------------------------------------------------------|
+| `GET /api/light`                                            | `{"state":"on","brightness":50,"mode":"manual","confirmed":true}`              |
+| `GET` or `POST /api/light?state=on` / `off` / `toggle`      | `on` restores the last brightness                                               |
+| `GET` or `POST /api/light?brightness=0-100`                 | perceived brightness in %, `0` = off                                           |
+| `GET` or `POST /api/light?mode=auto`                        | modes: `off`, `10`, `20`, `50`, `70`, `100`, `auto`                            |
+| `GET /api/status`                                           | time, NTP, network, clock link, light and MQTT state                           |
+
+`confirmed` is `true` if the clock reported the state over the optional feedback line. Invalid values return HTTP `400` with an error message.
+
+```bash
+curl "http://dbclock46ae24.local/api/light?brightness=40"
+```
+
+Without MQTT, Home Assistant can call the API with a [`rest_command`](https://www.home-assistant.io/integrations/rest_command/):
+
+```yaml
+rest_command:
+  dbclock_light:
+    url: "http://192.168.178.75/api/light?{{ args }}"
+```
+
+### LIGHT COMMANDS (MEGA)
+
+| FRAME                 | DIRECTION    | MEANING                                                          |
+|-----------------------|--------------|------------------------------------------------------------------|
+| `%sb_<0-7>_<crc>`     | Pico → Mega  | mode: 0 off, 1-5 = 10/20/50/70/100 %, 6 auto, 7 last manual brightness |
+| `%sl_<0-100>_<crc>`   | Pico → Mega  | manual brightness in %, stored in the EEPROM                      |
+| `%ls_<mode>,<0-100>_<crc>` | Mega → Pico | light state, on every change and every 30 s                  |
 
 
 
@@ -283,6 +338,7 @@ The following third party libraries are included unmodified in the `lib` folders
 | [NTPClient](https://github.com/arduino-libraries/NTPClient)     | 3.2.1      | `wifiinterface`                  | MIT          | Fabrice Weinberg   |
 | [Time](https://github.com/PaulStoffregen/Time)                  | 1.6.1      | `wifiinterface`                  | LGPL-2.1     | Michael Margolis   |
 | [WiFiManager](https://github.com/tzapu/WiFiManager)             | 2.0.0-rc.1 | `wifiinterface`                  | MIT          | tzapu              |
+| [PubSubClient](https://github.com/knolleary/pubsubclient)       | 2.8        | `picowinterface`                 | MIT          | Nicholas O'Leary   |
 
 The Arduino frameworks are installed by PlatformIO and are not part of this repository. They also provide the core libraries (`Wire`, `EEPROM`, `SPI`, `WiFi`, `WebServer`, `LittleFS`, `ArduinoOTA`, lwIP and the W5100 driver):
 
